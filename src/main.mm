@@ -130,13 +130,10 @@ static void onDeviceChange(void* context) {
 
     // Single managed reconnect sequence with exponential backoff
     __block int attempt = 0;
+    __block void (^reconnectBlock)(void) = [^{
+        if (!razerDevice_) return;
 
-    void (^reconnectBlock)(void);
-    reconnectBlock = ^{
-        BatteryMonitorApp* self = (BatteryMonitorApp*)self;
-        if (!self) return;
-
-        if (self->razerDevice_->connect()) {
+        if (razerDevice_->connect()) {
             [self updateBatteryDisplay];
             return;
         }
@@ -147,26 +144,26 @@ static void onDeviceChange(void* context) {
             double delay = pow(2.0, attempt);
             NSLog(@"Reconnect attempt %d failed, retrying in %.0fs", attempt, delay);
 
-            self->pendingReconnect_ = dispatch_block_create(DISPATCH_BLOCK_ASSIGN_DEFAULT, reconnectBlock);
+            pendingReconnect_ = Block_copy(reconnectBlock);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                          dispatch_get_main_queue(), self->pendingReconnect_);
+                          dispatch_get_main_queue(), pendingReconnect_);
         } else {
             NSLog(@"All reconnect attempts failed after %d tries", attempt);
             // Only show "Not Found" if ALL attempts fail
             NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
             if (icon) {
-                self->statusItem_.button.image = icon;
-                self->statusItem_.button.title = @"Not Found";
+                statusItem_.button.image = icon;
+                statusItem_.button.title = @"Not Found";
             } else {
-                self->statusItem_.button.image = nil;
-                self->statusItem_.button.title = @"🖱️ Not Found";
+                statusItem_.button.image = nil;
+                statusItem_.button.title = @"🖱️ Not Found";
             }
-            self->pendingReconnect_ = nil;
+            pendingReconnect_ = nil;
         }
-    };
+    } copy];
 
     // Start first reconnect attempt after 1 second
-    pendingReconnect_ = dispatch_block_create(DISPATCH_BLOCK_ASSIGN_DEFAULT, reconnectBlock);
+    pendingReconnect_ = reconnectBlock;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                   dispatch_get_main_queue(), pendingReconnect_);
 }
@@ -194,13 +191,8 @@ static void onDeviceChange(void* context) {
         return;
     }
 
-    // Initial battery query on background thread
-    // Note: Using manual reference counting, so no weak references
-    dispatch_async(batteryQueue_, ^{
-        // self already available in block
-        if (!self) return;
-        [self updateBatteryDisplay];
-    });
+    // Initial battery query
+    [self updateBatteryDisplay];
 
     // Set up polling timer (30 seconds)
     // We still keep this as a fallback for battery % changes over time
@@ -335,16 +327,15 @@ static void onDeviceChange(void* context) {
 - (void)pollBattery:(NSTimer*)timer {
     (void)timer;
     // Run battery query on background thread to avoid UI freezing
-    // Note: Using manual reference counting, so no weak references
     dispatch_async(batteryQueue_, ^{
-        // self already available in block
-        if (!self || !self->razerDevice_) {
-            return;
-        }
+        if (!razerDevice_) return;
 
         uint8_t batteryPercent = 0;
-        if (self->razerDevice_->queryBattery(batteryPercent)) {
-            // Update UI on main thread
+        bool success = razerDevice_->queryBattery(batteryPercent);
+        (void)batteryPercent; // Used only to trigger the query
+
+        // Update UI on main thread
+        if (success) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self updateBatteryDisplay];
             });
