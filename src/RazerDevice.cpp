@@ -63,9 +63,10 @@ const RazerSupportedDevice RazerDevice::SUPPORTED_DEVICES[] = {
 
 const size_t RazerDevice::NUM_SUPPORTED_DEVICES = sizeof(RazerDevice::SUPPORTED_DEVICES) / sizeof(RazerSupportedDevice);
 
-RazerDevice::RazerDevice() 
-    : usbInterface_(nullptr), 
+RazerDevice::RazerDevice()
+    : usbInterface_(nullptr),
       interfaceService_(0),
+      isShuttingDown_(false),
       isDongle_(true),  // Assume wireless by default
       deviceName_("Unknown Razer Mouse"),
       notificationPort_(nullptr),
@@ -76,6 +77,7 @@ RazerDevice::RazerDevice()
 }
 
 RazerDevice::~RazerDevice() {
+    isShuttingDown_ = true;
     stopMonitoring();
     disconnect();
 }
@@ -329,71 +331,94 @@ bool RazerDevice::connect() {
     if (usbInterface_ != nullptr) {
         return true; // Already connected
     }
-    
+
     io_service_t deviceService = 0;
     int vid = VENDOR_ID;
-    
-    // Try all supported devices - check wireless PIDs first, then wired
-    for (size_t i = 0; i < NUM_SUPPORTED_DEVICES; i++) {
-        // Try wireless PID first
-        uint16_t pidsToTry[] = {
-            SUPPORTED_DEVICES[i].wirelessPid,
-            SUPPORTED_DEVICES[i].wiredPid
-        };
-        
+
+    // RAII guard for CFMutableDictionary
+    struct CFDictGuard {
+        CFMutableDictionaryRef dict;
+        CFDictGuard() : dict(nullptr) {}
+        ~CFDictGuard() { if (dict) CFRelease(dict); }
+    };
+
+    // Lambda to try connecting to a specific device PID
+    auto tryConnectToDevice = [&](uint16_t wirelessPid, uint16_t wiredPid, const char* deviceName) -> bool {
+        uint16_t pidsToTry[] = { wirelessPid, wiredPid };
+
         for (int j = 0; j < 2; j++) {
             uint16_t pid = pidsToTry[j];
-            if (pid == 0) continue;  // Skip if wired PID not available
-            
-            CFMutableDictionaryRef matchingDict = IOServiceMatching(kIOUSBDeviceClassName);
-            if (matchingDict == nullptr) {
+            if (pid == 0) continue;  // Skip if PID not available
+
+            CFDictGuard guardedDict;
+            guardedDict.dict = IOServiceMatching(kIOUSBDeviceClassName);
+            if (guardedDict.dict == nullptr) {
                 continue;
             }
-            
+
             CFNumberRef vidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
             int pidInt = pid;
             CFNumberRef pidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pidInt);
-            CFDictionarySetValue(matchingDict, CFSTR(kUSBVendorID), vidRef);
-            CFDictionarySetValue(matchingDict, CFSTR(kUSBProductID), pidRef);
+            CFDictionarySetValue(guardedDict.dict, CFSTR(kUSBVendorID), vidRef);
+            CFDictionarySetValue(guardedDict.dict, CFSTR(kUSBProductID), pidRef);
             CFRelease(vidRef);
             CFRelease(pidRef);
-            
+
             io_iterator_t iterator;
-            kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator);
+            // Note: IOServiceGetMatchingServices takes ownership of the dictionary
+            kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault, guardedDict.dict, &iterator);
+            guardedDict.dict = nullptr;  // Dictionary now owned by IOKit, clear guard to prevent double-free
             if (kr != KERN_SUCCESS) {
                 continue;
             }
-            
+
             deviceService = IOIteratorNext(iterator);
             IOObjectRelease(iterator);
-            
+
             if (deviceService != 0) {
-                deviceName_ = SUPPORTED_DEVICES[i].name;
-                
+                deviceName_ = deviceName;
+
                 // DETECT MODE: Check if this is wireless or wired PID
-                isDongle_ = (pid == SUPPORTED_DEVICES[i].wirelessPid);
-                
+                isDongle_ = (pid == wirelessPid);
+
                 const char* mode = isDongle_ ? "Wireless/Dongle" : "Wired/Charging";
-                std::cout << "Connected to " << deviceName_ 
-                          << " via PID 0x" << std::hex << pid << std::dec 
+                std::cout << "Connected to " << deviceName_
+                          << " via PID 0x" << std::hex << pid << std::dec
                           << " (Mode: " << mode << ")" << std::endl;
-                goto found_device;
+                return true;
             }
         }
+        return false;
+    };
+
+    // Try all supported devices
+    for (size_t i = 0; i < NUM_SUPPORTED_DEVICES; i++) {
+        if (tryConnectToDevice(SUPPORTED_DEVICES[i].wirelessPid, SUPPORTED_DEVICES[i].wiredPid, SUPPORTED_DEVICES[i].name)) {
+            break;
+        }
     }
-    
-    found_device:
+
+    // Check if device was found
     if (deviceService == 0) {
+        std::cerr << "ERROR: No Razer device found" << std::endl;
         return false;  // Device not found
     }
-    
+
     // Find and open Interface 2
+    std::cout << "Attempting to open USB interface for device: " << deviceName_ << std::endl;
     bool success = findInterface2(deviceService);
     IOObjectRelease(deviceService);
-    
-    if (success) {
-        // Initialize device to Driver Mode (0x03) - enables battery queries
-        setDeviceMode(0x03, 0x00);
+
+    if (!success) {
+        std::cerr << "ERROR: Failed to open USB interface" << std::endl;
+        return false;
+    }
+
+    std::cout << "Successfully connected to " << deviceName_ << std::endl;
+
+    // Initialize device to Driver Mode (0x03) - enables battery queries
+    if (!setDeviceMode(0x03, 0x00)) {
+        std::cerr << "WARNING: Failed to set device mode, battery queries may not work" << std::endl;
     }
     
     return success;
@@ -404,6 +429,7 @@ void RazerDevice::disconnect() {
         (*usbInterface_)->USBInterfaceClose(usbInterface_);
         (*usbInterface_)->Release(usbInterface_);
         usbInterface_ = nullptr;
+        std::cout << "Disconnected from " << deviceName_ << std::endl;
     }
     if (interfaceService_ != 0) {
         IOObjectRelease(interfaceService_);
@@ -411,10 +437,24 @@ void RazerDevice::disconnect() {
     }
 }
 
+bool RazerDevice::isConnected() const {
+    if (usbInterface_ == nullptr) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(usbMutex_);
+
+    // Actively verify USB interface is still valid
+    UInt8 interfaceNumber;
+    IOReturn kr = (*usbInterface_)->GetInterfaceNumber(usbInterface_, &interfaceNumber);
+
+    return (kr == kIOReturnSuccess && interfaceNumber == TARGET_INTERFACE);
+}
+
 bool RazerDevice::setDeviceMode(uint8_t mode, uint8_t param) {
     // Set Device Mode command - switches device to Driver Mode (0x03)
     // This enables battery queries on wireless Razer devices
-    if (usbInterface_ == nullptr) {
+    if (isShuttingDown_ || usbInterface_ == nullptr) {
         return false;
     }
     
@@ -430,25 +470,33 @@ bool RazerDevice::setDeviceMode(uint8_t mode, uint8_t param) {
     report[9] = param;  // args[1]: Param
     
     calculateChecksum(report);
-    
+
     if (!sendReport(report)) {
+        usbTimer_.onFailure();
         return false;
     }
-    
-    usleep(100000);  // 100ms wait for processing
-    
+
+    usbTimer_.waitForResponse();
+
     uint8_t response[REPORT_SIZE];
     std::memset(response, 0, REPORT_SIZE);
-    
+
     if (!readResponse(response, REPORT_SIZE)) {
+        usbTimer_.onFailure();
         return false;
     }
-    
+
     // Wait for mode switch to complete
     usleep(300000);  // 300ms
-    
+
     // Accept Status 0x00 (Success) or 0x02 (Busy/Acknowledged)
-    return (response[0] == 0x00 || response[0] == 0x02);
+    if (response[0] == 0x00 || response[0] == 0x02) {
+        usbTimer_.onSuccess();
+        return true;
+    }
+
+    usbTimer_.onFailure();
+    return false;
 }
 
 void RazerDevice::calculateChecksum(uint8_t* report) {
@@ -461,10 +509,16 @@ void RazerDevice::calculateChecksum(uint8_t* report) {
 }
 
 bool RazerDevice::sendReport(const uint8_t* report) {
+    if (isShuttingDown_) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(usbMutex_);
+
     if (usbInterface_ == nullptr) {
         return false;
     }
-    
+
     // USB Control Transfer - SET_REPORT via Interface
     // NOTE: wIndex = 0x00 for mice (per librazermacos), NOT the interface number!
     IOUSBDevRequest request;
@@ -474,22 +528,35 @@ bool RazerDevice::sendReport(const uint8_t* report) {
     request.wIndex = 0x00;  // Protocol index for mice (librazermacos default)
     request.wLength = REPORT_SIZE;  // 90 bytes
     request.pData = (void*)report;
-    
+    request.noDataTimeout = 5000;      // 5 second timeout
+    request.completionTimeout = 5000;  // 5 second timeout
+
     IOReturn kr = (*usbInterface_)->ControlRequest(usbInterface_, 0, &request);
-    
+
+    if (kr == kIOReturnTimeout) {
+        std::cerr << "USB timeout sending report - device may be frozen" << std::endl;
+        return false;
+    }
+
     if (kr != kIOReturnSuccess) {
         std::cerr << "Failed to send report: 0x" << std::hex << kr << std::dec << std::endl;
         return false;
     }
-    
+
     return true;
 }
 
 bool RazerDevice::readResponse(uint8_t* buffer, size_t bufferSize) {
+    if (isShuttingDown_) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(usbMutex_);
+
     if (usbInterface_ == nullptr || bufferSize < REPORT_SIZE) {
         return false;
     }
-    
+
     // USB Control Transfer - GET_REPORT via Interface
     // NOTE: wIndex = 0x00 for mice (per librazermacos), NOT the interface number!
     IOUSBDevRequest request;
@@ -499,22 +566,29 @@ bool RazerDevice::readResponse(uint8_t* buffer, size_t bufferSize) {
     request.wIndex = 0x00;  // Protocol index for mice (librazermacos default)
     request.wLength = REPORT_SIZE;  // 90 bytes
     request.pData = buffer;
-    
+    request.noDataTimeout = 5000;      // 5 second timeout
+    request.completionTimeout = 5000;  // 5 second timeout
+
     IOReturn kr = (*usbInterface_)->ControlRequest(usbInterface_, 0, &request);
-    
+
+    if (kr == kIOReturnTimeout) {
+        std::cerr << "USB timeout reading response - device may be frozen" << std::endl;
+        return false;
+    }
+
     if (kr != kIOReturnSuccess) {
         std::cerr << "Failed to read response: 0x" << std::hex << kr << std::dec << std::endl;
         return false;
     }
-    
+
     return true;
 }
 
 bool RazerDevice::queryBattery(uint8_t& batteryPercent) {
     // Query battery level using Razer HID protocol
     // Try both Transaction IDs: 0x1F (Wireless) and 0xFF (Wired)
-    
-    if (usbInterface_ == nullptr) {
+
+    if (isShuttingDown_ || usbInterface_ == nullptr) {
         return false;
     }
     
@@ -531,26 +605,29 @@ bool RazerDevice::queryBattery(uint8_t& batteryPercent) {
         report[7] = 0x80;
         
         calculateChecksum(report);
-        
+
         if (!sendReport(report)) {
+            usbTimer_.onFailure();
             continue;
         }
-        
-        usleep(100000);
-        
+
+        usbTimer_.waitForResponse();
+
         uint8_t response[REPORT_SIZE];
         std::memset(response, 0, REPORT_SIZE);
-        
+
         if (!readResponse(response, REPORT_SIZE)) {
+            usbTimer_.onFailure();
             continue;
         }
-        
+
         uint8_t status = response[0];
         uint8_t rawBattery = response[9];
-        
+
         // Status 0x00 or 0x02 = Success with data
         if ((status == 0x00 || status == 0x02) && rawBattery > 0) {
             batteryPercent = (rawBattery * 100) / 255;
+            usbTimer_.onSuccess();
             return true;
         }
         
@@ -571,11 +648,11 @@ bool RazerDevice::queryChargingStatus(bool& isCharging) {
         isCharging = true;
         return true;
     }
-    
+
     // Query charging status using Command 0x84 (per librazermacos)
     // Try both Transaction IDs: 0x1F (Wireless) and 0xFF (Wired)
-    
-    if (usbInterface_ == nullptr) {
+
+    if (isShuttingDown_ || usbInterface_ == nullptr) {
         isCharging = false;
         return false;
     }
@@ -593,36 +670,41 @@ bool RazerDevice::queryChargingStatus(bool& isCharging) {
         report[7] = 0x84;  // Get Charging Status
         
         calculateChecksum(report);
-        
+
         if (!sendReport(report)) {
+            usbTimer_.onFailure();
             continue;
         }
-        
-        usleep(100000);
-        
+
+        usbTimer_.waitForResponse();
+
         uint8_t response[REPORT_SIZE];
         std::memset(response, 0, REPORT_SIZE);
-        
+
         if (!readResponse(response, REPORT_SIZE)) {
+            usbTimer_.onFailure();
             continue;
         }
-        
+
         uint8_t status = response[0];
-        
+
         // Status 0x00 or 0x02 = Valid response
         // Charging status is in Byte 11 (index 11) per debug analysis
         if (status == 0x00 || status == 0x02) {
             isCharging = (response[11] == 0x01);
+            usbTimer_.onSuccess();
             return true;
         }
-        
+
         // Status 0x04 = Wired mode (command not supported = charging via cable)
         if (status == 0x04) {
             isCharging = true;  // Wired = Charging
+            usbTimer_.onSuccess();
             return true;
         }
     }
-    
+
     isCharging = false;
+    usbTimer_.onFailure();
     return false;
 }
