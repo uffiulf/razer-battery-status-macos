@@ -3,6 +3,10 @@
 
 #include <cstdint>
 #include <string>
+#include <mutex>
+#include <atomic>
+#include <algorithm>
+#include <unistd.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/usb/IOUSBLib.h>
@@ -10,6 +14,35 @@
 
 // Callback type for device change events
 typedef void (*DeviceCallback)(void* context);
+
+// Adaptive USB timing - adjusts wait time based on success/failure
+class USBTimer {
+private:
+    static constexpr int BASE_DELAY_US = 100000;  // 100ms base delay
+    int consecutiveFailures_;
+
+public:
+    USBTimer() : consecutiveFailures_(0) {}
+
+    void waitForResponse() {
+        // Increase delay for each failure, max 500ms
+        int delay = BASE_DELAY_US * (1 + consecutiveFailures_ / 3);
+        delay = std::min(delay, 500000);  // Cap at 500ms
+        usleep(delay);
+    }
+
+    void onSuccess() {
+        consecutiveFailures_ = 0;
+    }
+
+    void onFailure() {
+        consecutiveFailures_++;
+    }
+
+    void reset() {
+        consecutiveFailures_ = 0;
+    }
+};
 
 // Supported Razer wireless mouse device information
 struct RazerSupportedDevice {
@@ -27,7 +60,7 @@ public:
     void disconnect();
     bool queryBattery(uint8_t& batteryPercent);
     bool queryChargingStatus(bool& isCharging);
-    bool isConnected() const { return usbInterface_ != nullptr; }
+    bool isConnected() const;
     
     // Hotplug monitoring
     void startMonitoring(DeviceCallback callback, void* context);
@@ -50,7 +83,14 @@ private:
     
     IOUSBInterfaceInterface** usbInterface_;
     io_service_t interfaceService_;
-    
+
+    // Thread safety
+    mutable std::mutex usbMutex_;          // Protects all USB operations
+    std::atomic<bool> isShuttingDown_;     // Safe teardown flag
+
+    // Adaptive timing
+    USBTimer usbTimer_;                    // Adaptive USB operation timing
+
     // Wired vs. Wireless detection
     bool isDongle_;  // true = Wireless (Dongle), false = Wired (Direct USB)
     std::string deviceName_;  // Human-readable device name
