@@ -5,7 +5,7 @@ CXXFLAGS = -std=c++17 -Wall -Wextra -O2 $(ARCH_FLAGS)
 OBJCFLAGS = -x objective-c++ -std=c++17 -Wall -Wextra -O2 $(ARCH_FLAGS)
 
 # IOKit-based implementation - no HIDAPI needed
-FRAMEWORKS = -framework IOKit -framework Cocoa -framework CoreFoundation
+FRAMEWORKS = -framework IOKit -framework Cocoa -framework CoreFoundation -framework UserNotifications
 
 SRCDIR = src
 SOURCES = $(SRCDIR)/RazerDevice.cpp $(SRCDIR)/main.mm
