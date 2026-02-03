@@ -130,11 +130,10 @@ static void onDeviceChange(void* context) {
 
     // Single managed reconnect sequence with exponential backoff
     __block int attempt = 0;
-    __weak BatteryMonitorApp* weakSelf = self;
 
     void (^reconnectBlock)(void);
     reconnectBlock = ^{
-        BatteryMonitorApp* self = weakSelf;
+        BatteryMonitorApp* self = (BatteryMonitorApp*)self;
         if (!self) return;
 
         if (self->razerDevice_->connect()) {
@@ -148,7 +147,7 @@ static void onDeviceChange(void* context) {
             double delay = pow(2.0, attempt);
             NSLog(@"Reconnect attempt %d failed, retrying in %.0fs", attempt, delay);
 
-            self->pendingReconnect_ = dispatch_block_create(0, reconnectBlock);
+            self->pendingReconnect_ = dispatch_block_create(DISPATCH_BLOCK_ASSIGN_DEFAULT, reconnectBlock);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                           dispatch_get_main_queue(), self->pendingReconnect_);
         } else {
@@ -167,7 +166,7 @@ static void onDeviceChange(void* context) {
     };
 
     // Start first reconnect attempt after 1 second
-    pendingReconnect_ = dispatch_block_create(0, reconnectBlock);
+    pendingReconnect_ = dispatch_block_create(DISPATCH_BLOCK_ASSIGN_DEFAULT, reconnectBlock);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                   dispatch_get_main_queue(), pendingReconnect_);
 }
@@ -196,9 +195,9 @@ static void onDeviceChange(void* context) {
     }
 
     // Initial battery query on background thread
-    __weak BatteryMonitorApp* weakSelf = self;
+    // Note: Using manual reference counting, so no weak references
     dispatch_async(batteryQueue_, ^{
-        BatteryMonitorApp* self = weakSelf;
+        // self already available in block
         if (!self) return;
         [self updateBatteryDisplay];
     });
@@ -336,9 +335,9 @@ static void onDeviceChange(void* context) {
 - (void)pollBattery:(NSTimer*)timer {
     (void)timer;
     // Run battery query on background thread to avoid UI freezing
-    __weak BatteryMonitorApp* weakSelf = self;
+    // Note: Using manual reference counting, so no weak references
     dispatch_async(batteryQueue_, ^{
-        BatteryMonitorApp* self = weakSelf;
+        // self already available in block
         if (!self || !self->razerDevice_) {
             return;
         }
