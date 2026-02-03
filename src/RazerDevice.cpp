@@ -528,15 +528,8 @@ bool RazerDevice::sendReport(const uint8_t* report) {
     request.wIndex = 0x00;  // Protocol index for mice (librazermacos default)
     request.wLength = REPORT_SIZE;  // 90 bytes
     request.pData = (void*)report;
-    request.noDataTimeout = 5000;      // 5 second timeout
-    request.completionTimeout = 5000;  // 5 second timeout
 
     IOReturn kr = (*usbInterface_)->ControlRequest(usbInterface_, 0, &request);
-
-    if (kr == kIOReturnTimeout) {
-        std::cerr << "USB timeout sending report - device may be frozen" << std::endl;
-        return false;
-    }
 
     if (kr != kIOReturnSuccess) {
         std::cerr << "Failed to send report: 0x" << std::hex << kr << std::dec << std::endl;
@@ -566,15 +559,8 @@ bool RazerDevice::readResponse(uint8_t* buffer, size_t bufferSize) {
     request.wIndex = 0x00;  // Protocol index for mice (librazermacos default)
     request.wLength = REPORT_SIZE;  // 90 bytes
     request.pData = buffer;
-    request.noDataTimeout = 5000;      // 5 second timeout
-    request.completionTimeout = 5000;  // 5 second timeout
 
     IOReturn kr = (*usbInterface_)->ControlRequest(usbInterface_, 0, &request);
-
-    if (kr == kIOReturnTimeout) {
-        std::cerr << "USB timeout reading response - device may be frozen" << std::endl;
-        return false;
-    }
 
     if (kr != kIOReturnSuccess) {
         std::cerr << "Failed to read response: 0x" << std::hex << kr << std::dec << std::endl;
