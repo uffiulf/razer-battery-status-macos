@@ -347,7 +347,9 @@ bool RazerDevice::connect() {
 
     // Lambda to try connecting to a specific device PID
     auto tryConnectToDevice = [&](uint16_t wirelessPid, uint16_t wiredPid, const char* deviceName) -> bool {
-        uint16_t pidsToTry[] = { wirelessPid, wiredPid };
+        // Try wired first: when USB-C cable is connected, prefer direct connection
+        // over dongle so we get real battery level instead of status 0x04
+        uint16_t pidsToTry[] = { wiredPid, wirelessPid };
 
         for (int j = 0; j < 2; j++) {
             uint16_t pid = pidsToTry[j];
@@ -682,10 +684,11 @@ bool RazerDevice::queryBattery(uint8_t& batteryPercent) {
             return true;
         }
 
-        // Status 0x04 = Wired mode (command not supported = charging via cable)
+        // Status 0x04 = Command not supported on this interface.
+        // Don't fake 100% - let caller use cached battery level.
         if (status == 0x04) {
-            batteryPercent = 100;  // Assume full when wired
-            return true;
+            usbTimer_.onSuccess();
+            return false;
         }
     }
 
