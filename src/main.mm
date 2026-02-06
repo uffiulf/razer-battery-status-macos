@@ -10,7 +10,6 @@
     NSTimer* pollTimer_;
     uint8_t lastBatteryLevel_;
     bool notificationShown_;
-    dispatch_block_t pendingReconnect_;
     dispatch_queue_t batteryQueue_;
 }
 
@@ -42,7 +41,6 @@ static void onDeviceChange(void* context) {
         pollTimer_ = nil;
         lastBatteryLevel_ = 0;
         notificationShown_ = false;
-        pendingReconnect_ = nil;
         batteryQueue_ = dispatch_queue_create("no.ulfsec.battery", DISPATCH_QUEUE_SERIAL);
     }
     return self;
@@ -100,76 +98,35 @@ static void onDeviceChange(void* context) {
         return;
     }
 
-    // Cancel any pending connectToDevice retries from performSelector:afterDelay:
+    // Cancel any pending connectToDevice retries
     [NSObject cancelPreviousPerformRequestsWithTarget:self
                                              selector:@selector(connectToDevice)
                                                object:nil];
 
-    // Cancel any pending reconnect attempts
-    if (pendingReconnect_) {
-        dispatch_block_cancel(pendingReconnect_);
-        pendingReconnect_ = nil;
-    }
-
+    // Disconnect stale USB handle
     razerDevice_->disconnect();
 
-    // Immediately show disconnected state in UI
-    NSImage* disconnectedIcon = [self mouseIconWithColor:[NSColor systemGrayColor]];
-    if (disconnectedIcon) {
-        statusItem_.button.image = disconnectedIcon;
-        statusItem_.button.title = @"Reconnecting...";
+    // Try to reconnect once. If it fails, show "Disconnected" and let
+    // the 10s poll timer handle further reconnect attempts.
+    if (razerDevice_->connect()) {
+        [self updateBatteryDisplay];
     } else {
-        statusItem_.button.image = nil;
-        statusItem_.button.title = @"🖱️ Reconnecting...";
-    }
-    NSDictionary* grayAttrs = @{
-        NSForegroundColorAttributeName: [NSColor systemGrayColor],
-        NSFontAttributeName: [NSFont menuBarFontOfSize:0]
-    };
-    statusItem_.button.attributedTitle = [[NSAttributedString alloc]
-        initWithString:(disconnectedIcon ? @"Reconnecting..." : @"🖱️ Reconnecting...")
-        attributes:grayAttrs];
-
-    // Single managed reconnect sequence with exponential backoff
-    __weak __typeof(self) weakSelf = self;
-    __block int attempt = 0;
-    __block void (^reconnectBlock)(void) = ^{
-        __strong __typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf || !strongSelf->razerDevice_) return;
-
-        if (strongSelf->razerDevice_->connect()) {
-            [strongSelf updateBatteryDisplay];
-            return;
-        }
-
-        attempt++;
-        if (attempt < 5) {
-            // Exponential backoff: 2s, 4s, 8s, 16s
-            double delay = pow(2.0, attempt);
-            NSLog(@"Reconnect attempt %d failed, retrying in %.0fs", attempt, delay);
-
-            strongSelf->pendingReconnect_ = reconnectBlock;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                          dispatch_get_main_queue(), strongSelf->pendingReconnect_);
+        NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
+        if (icon) {
+            statusItem_.button.image = icon;
+            statusItem_.button.title = @"Disconnected";
         } else {
-            NSLog(@"All reconnect attempts failed after %d tries", attempt);
-            // Only show "Not Found" if ALL attempts fail
-            NSImage* icon = [strongSelf mouseIconWithColor:[NSColor systemGrayColor]];
-            if (icon) {
-                strongSelf->statusItem_.button.image = icon;
-                strongSelf->statusItem_.button.title = @"Not Found";
-            } else {
-                strongSelf->statusItem_.button.image = nil;
-                strongSelf->statusItem_.button.title = @"🖱️ Not Found";
-            }
-            strongSelf->pendingReconnect_ = nil;
+            statusItem_.button.image = nil;
+            statusItem_.button.title = @"🖱️ Disconnected";
         }
-    };
-
-    // Start first reconnect attempt after 1 second
-    pendingReconnect_ = reconnectBlock;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                  dispatch_get_main_queue(), pendingReconnect_);
+        NSDictionary* attrs = @{
+            NSForegroundColorAttributeName: [NSColor systemGrayColor],
+            NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+        };
+        NSString* title = icon ? @"Disconnected" : @"🖱️ Disconnected";
+        statusItem_.button.attributedTitle = [[NSAttributedString alloc]
+            initWithString:title attributes:attrs];
+    }
 }
 
 - (void)manualRefresh:(id)sender {
@@ -466,10 +423,6 @@ static void onDeviceChange(void* context) {
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
     (void)notification;
-    if (pendingReconnect_) {
-        dispatch_block_cancel(pendingReconnect_);
-        pendingReconnect_ = nil;
-    }
     if (pollTimer_) {
         [pollTimer_ invalidate];
         pollTimer_ = nil;
