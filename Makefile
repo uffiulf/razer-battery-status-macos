@@ -2,7 +2,7 @@ CXX = clang++
 # Universal Binary: Support both Apple Silicon (arm64) and Intel (x86_64)
 ARCH_FLAGS = -arch arm64 -arch x86_64
 CXXFLAGS = -std=c++17 -Wall -Wextra -O2 $(ARCH_FLAGS)
-OBJCFLAGS = -x objective-c++ -std=c++17 -Wall -Wextra -O2 $(ARCH_FLAGS)
+OBJCFLAGS = -x objective-c++ -std=c++17 -fobjc-arc -Wall -Wextra -O2 $(ARCH_FLAGS)
 
 # IOKit-based implementation - no HIDAPI needed
 FRAMEWORKS = -framework IOKit -framework Cocoa -framework CoreFoundation -framework UserNotifications

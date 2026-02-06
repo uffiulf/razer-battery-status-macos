@@ -305,6 +305,7 @@ bool RazerDevice::findInterface2(io_service_t device) {
                         found = true;
                     } else {
                         (*interface)->Release(interface);
+                        IOObjectRelease(usbInterfaceRef);
                     }
                     break;
                 } else {
@@ -425,6 +426,7 @@ bool RazerDevice::connect() {
 }
 
 void RazerDevice::disconnect() {
+    std::lock_guard<std::mutex> lock(usbMutex_);
     if (usbInterface_ != nullptr) {
         (*usbInterface_)->USBInterfaceClose(usbInterface_);
         (*usbInterface_)->Release(usbInterface_);
@@ -438,11 +440,11 @@ void RazerDevice::disconnect() {
 }
 
 bool RazerDevice::isConnected() const {
+    std::lock_guard<std::mutex> lock(usbMutex_);
+
     if (usbInterface_ == nullptr) {
         return false;
     }
-
-    std::lock_guard<std::mutex> lock(usbMutex_);
 
     // Actively verify USB interface is still valid
     UInt8 interfaceNumber;
@@ -454,13 +456,13 @@ bool RazerDevice::isConnected() const {
 bool RazerDevice::setDeviceMode(uint8_t mode, uint8_t param) {
     // Set Device Mode command - switches device to Driver Mode (0x03)
     // This enables battery queries on wireless Razer devices
-    if (isShuttingDown_ || usbInterface_ == nullptr) {
+    if (isShuttingDown_) {
         return false;
     }
-    
+
     uint8_t report[REPORT_SIZE];
     std::memset(report, 0, REPORT_SIZE);
-    
+
     report[0] = 0x00;   // Status: New Command
     report[1] = 0x1F;   // Transaction ID: Wireless
     report[5] = 0x02;   // Data Size
@@ -468,20 +470,23 @@ bool RazerDevice::setDeviceMode(uint8_t mode, uint8_t param) {
     report[7] = 0x04;   // Command ID: Set Mode
     report[8] = mode;   // args[0]: Mode (0x03 = Driver Mode)
     report[9] = param;  // args[1]: Param
-    
+
     calculateChecksum(report);
 
-    if (!sendReport(report)) {
+    std::lock_guard<std::mutex> lock(usbMutex_);
+
+    if (!sendReportLocked(report)) {
         usbTimer_.onFailure();
         return false;
     }
 
     usbTimer_.waitForResponse();
+    if (isShuttingDown_) return false;
 
     uint8_t response[REPORT_SIZE];
     std::memset(response, 0, REPORT_SIZE);
 
-    if (!readResponse(response, REPORT_SIZE)) {
+    if (!readResponseLocked(response, REPORT_SIZE)) {
         usbTimer_.onFailure();
         return false;
     }
@@ -508,13 +513,8 @@ void RazerDevice::calculateChecksum(uint8_t* report) {
     report[88] = checksum; // Store checksum in byte 88 (CRC position)
 }
 
-bool RazerDevice::sendReport(const uint8_t* report) {
-    if (isShuttingDown_) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(usbMutex_);
-
+bool RazerDevice::sendReportLocked(const uint8_t* report) {
+    // Requires usbMutex_ to be held by caller
     if (usbInterface_ == nullptr) {
         return false;
     }
@@ -539,13 +539,8 @@ bool RazerDevice::sendReport(const uint8_t* report) {
     return true;
 }
 
-bool RazerDevice::readResponse(uint8_t* buffer, size_t bufferSize) {
-    if (isShuttingDown_) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(usbMutex_);
-
+bool RazerDevice::readResponseLocked(uint8_t* buffer, size_t bufferSize) {
+    // Requires usbMutex_ to be held by caller
     if (usbInterface_ == nullptr || bufferSize < REPORT_SIZE) {
         return false;
     }
@@ -570,39 +565,63 @@ bool RazerDevice::readResponse(uint8_t* buffer, size_t bufferSize) {
     return true;
 }
 
+bool RazerDevice::sendReport(const uint8_t* report) {
+    if (isShuttingDown_) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(usbMutex_);
+    return sendReportLocked(report);
+}
+
+bool RazerDevice::readResponse(uint8_t* buffer, size_t bufferSize) {
+    if (isShuttingDown_) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(usbMutex_);
+    return readResponseLocked(buffer, bufferSize);
+}
+
 bool RazerDevice::queryBattery(uint8_t& batteryPercent) {
     // Query battery level using Razer HID protocol
     // Try both Transaction IDs: 0x1F (Wireless) and 0xFF (Wired)
 
-    if (isShuttingDown_ || usbInterface_ == nullptr) {
+    if (isShuttingDown_) {
         return false;
     }
-    
+
     const uint8_t transIds[] = {0x1F, 0xFF};
-    
+
+    std::lock_guard<std::mutex> lock(usbMutex_);
+
+    if (usbInterface_ == nullptr) {
+        return false;
+    }
+
     for (int i = 0; i < 2; i++) {
         uint8_t report[REPORT_SIZE];
         std::memset(report, 0, REPORT_SIZE);
-        
+
         report[0] = 0x00;
         report[1] = transIds[i];
         report[5] = 0x02;
         report[6] = 0x07;
         report[7] = 0x80;
-        
+
         calculateChecksum(report);
 
-        if (!sendReport(report)) {
+        if (!sendReportLocked(report)) {
             usbTimer_.onFailure();
             continue;
         }
 
+        if (isShuttingDown_) return false;
         usbTimer_.waitForResponse();
+        if (isShuttingDown_) return false;
 
         uint8_t response[REPORT_SIZE];
         std::memset(response, 0, REPORT_SIZE);
 
-        if (!readResponse(response, REPORT_SIZE)) {
+        if (!readResponseLocked(response, REPORT_SIZE)) {
             usbTimer_.onFailure();
             continue;
         }
@@ -616,14 +635,14 @@ bool RazerDevice::queryBattery(uint8_t& batteryPercent) {
             usbTimer_.onSuccess();
             return true;
         }
-        
+
         // Status 0x04 = Wired mode (command not supported = charging via cable)
         if (status == 0x04) {
             batteryPercent = 100;  // Assume full when wired
             return true;
         }
     }
-    
+
     batteryPercent = 0;
     return false;
 }
@@ -638,36 +657,45 @@ bool RazerDevice::queryChargingStatus(bool& isCharging) {
     // Query charging status using Command 0x84 (per librazermacos)
     // Try both Transaction IDs: 0x1F (Wireless) and 0xFF (Wired)
 
-    if (isShuttingDown_ || usbInterface_ == nullptr) {
+    if (isShuttingDown_) {
         isCharging = false;
         return false;
     }
-    
+
     const uint8_t transIds[] = {0x1F, 0xFF};
-    
+
+    std::lock_guard<std::mutex> lock(usbMutex_);
+
+    if (usbInterface_ == nullptr) {
+        isCharging = false;
+        return false;
+    }
+
     for (int i = 0; i < 2; i++) {
         uint8_t report[REPORT_SIZE];
         std::memset(report, 0, REPORT_SIZE);
-        
+
         report[0] = 0x00;
         report[1] = transIds[i];
         report[5] = 0x02;
         report[6] = 0x07;
         report[7] = 0x84;  // Get Charging Status
-        
+
         calculateChecksum(report);
 
-        if (!sendReport(report)) {
+        if (!sendReportLocked(report)) {
             usbTimer_.onFailure();
             continue;
         }
 
+        if (isShuttingDown_) { isCharging = false; return false; }
         usbTimer_.waitForResponse();
+        if (isShuttingDown_) { isCharging = false; return false; }
 
         uint8_t response[REPORT_SIZE];
         std::memset(response, 0, REPORT_SIZE);
 
-        if (!readResponse(response, REPORT_SIZE)) {
+        if (!readResponseLocked(response, REPORT_SIZE)) {
             usbTimer_.onFailure();
             continue;
         }
