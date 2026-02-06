@@ -1,4 +1,4 @@
-#!/bin/bash
+ #!/bin/bash
 # Build script for Razer Battery Monitor macOS Application Bundle
 # This creates a standalone .app that can be moved to /Applications
 
@@ -28,10 +28,16 @@ cp "${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/"
 echo "Copying Info.plist..."
 cp "Info.plist" "${APP_BUNDLE}/Contents/"
 
-# Step 5: Create PkgInfo file (standard for macOS apps)
+# Step 5: Copy AppIcon.icns
+if [ -f "AppIcon.icns" ]; then
+    echo "Copying AppIcon.icns..."
+    cp "AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/"
+fi
+
+# Step 6: Create PkgInfo file (standard for macOS apps)
 echo "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
-# Step 6: Sign the app with ad-hoc signature
+# Step 7: Sign the app with ad-hoc signature
 echo "Signing app bundle..."
 codesign --force --deep -s - "${APP_BUNDLE}"
 
