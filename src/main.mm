@@ -4,18 +4,6 @@
 #import <UserNotifications/UserNotifications.h>
 #import "RazerDevice.hpp"
 
-// Forward declaration
-@class BatteryMonitorApp;
-
-// Static callback for RazerDevice monitoring
-static void onDeviceChange(void* context) {
-    BatteryMonitorApp* app = (__bridge BatteryMonitorApp*)context;
-    // Ensure we run on main thread for UI updates
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [app performSelector:@selector(handleUSBEvent)];
-    });
-}
-
 @interface BatteryMonitorApp : NSObject <NSApplicationDelegate> {
     NSStatusItem* statusItem_;
     RazerDevice* razerDevice_;
@@ -33,6 +21,15 @@ static void onDeviceChange(void* context) {
 - (void)handleUSBEvent;
 - (NSImage*)mouseIconWithColor:(NSColor*)color;
 @end
+
+// Static callback for RazerDevice monitoring (must be after @interface)
+static void onDeviceChange(void* context) {
+    BatteryMonitorApp* app = (__bridge BatteryMonitorApp*)context;
+    // Ensure we run on main thread for UI updates
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [app handleUSBEvent];
+    });
+}
 
 @implementation BatteryMonitorApp
 
@@ -117,10 +114,10 @@ static void onDeviceChange(void* context) {
     razerDevice_->disconnect();
 
     // Single managed reconnect sequence with exponential backoff
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof(self) weakSelf = self;
     __block int attempt = 0;
     __block void (^reconnectBlock)(void) = ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf || !strongSelf->razerDevice_) return;
 
         if (strongSelf->razerDevice_->connect()) {
