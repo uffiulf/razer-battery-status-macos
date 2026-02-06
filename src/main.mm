@@ -95,7 +95,15 @@ static void onDeviceChange(void* context) {
         razerDevice_->startMonitoring(onDeviceChange, (__bridge void*)self);
     }
     
-    // STEP 4: Connect to device
+    // STEP 4: Register for sleep/wake notifications
+    [[[NSWorkspace sharedWorkspace] notificationCenter]
+        addObserver:self selector:@selector(systemWillSleep:)
+        name:NSWorkspaceWillSleepNotification object:nil];
+    [[[NSWorkspace sharedWorkspace] notificationCenter]
+        addObserver:self selector:@selector(systemDidWake:)
+        name:NSWorkspaceDidWakeNotification object:nil];
+
+    // STEP 5: Connect to device
     [self performSelector:@selector(connectToDevice) withObject:nil afterDelay:0.5];
 }
 
@@ -218,7 +226,9 @@ static void onDeviceChange(void* context) {
 
     // Format menu bar text
     NSString* titleText;
-    if (isCharging) {
+    if (isCharging && batteryPercent >= 100) {
+        titleText = [NSString stringWithFormat:@"%d%% 🔌", batteryPercent];
+    } else if (isCharging) {
         titleText = [NSString stringWithFormat:@"%d%% ⚡", batteryPercent];
     } else {
         titleText = [NSString stringWithFormat:@"%d%%", batteryPercent];
@@ -246,7 +256,14 @@ static void onDeviceChange(void* context) {
     statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:titleText attributes:attrs];
 
     // Update dropdown menu status line
-    NSString* mode = isCharging ? @"Charging via USB-C" : @"Wireless";
+    NSString* mode;
+    if (isCharging && batteryPercent >= 100) {
+        mode = @"Fully charged";
+    } else if (isCharging) {
+        mode = @"Charging via USB-C";
+    } else {
+        mode = @"Wireless";
+    }
     statusMenuItem_.title = [NSString stringWithFormat:@"Razer Viper V2 Pro — %@ — %d%%", mode, batteryPercent];
 
     // Low battery notification
@@ -375,8 +392,28 @@ static void onDeviceChange(void* context) {
     }];
 }
 
+- (void)systemWillSleep:(NSNotification*)notification {
+    (void)notification;
+    NSLog(@"System going to sleep, pausing poll timer");
+    if (pollTimer_) {
+        [pollTimer_ invalidate];
+        pollTimer_ = nil;
+    }
+    if (razerDevice_) {
+        razerDevice_->disconnect();
+    }
+}
+
+- (void)systemDidWake:(NSNotification*)notification {
+    (void)notification;
+    NSLog(@"System woke up, reconnecting...");
+    // Give USB subsystem time to re-enumerate devices after wake
+    [self performSelector:@selector(connectToDevice) withObject:nil afterDelay:2.0];
+}
+
 - (void)applicationWillTerminate:(NSNotification*)notification {
     (void)notification;
+    [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
     if (pollTimer_) {
         [pollTimer_ invalidate];
         pollTimer_ = nil;
