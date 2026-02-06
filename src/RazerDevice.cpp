@@ -68,6 +68,7 @@ RazerDevice::RazerDevice()
       interfaceService_(0),
       isShuttingDown_(false),
       isDongle_(true),  // Assume wireless by default
+      connectedWiredPid_(0),
       deviceName_("Unknown Razer Mouse"),
       notificationPort_(nullptr),
       addedIter_(0),
@@ -353,7 +354,8 @@ bool RazerDevice::connect() {
             if (pid == 0) continue;  // Skip if PID not available
 
             CFDictGuard guardedDict;
-            guardedDict.dict = IOServiceMatching(kIOUSBDeviceClassName);
+            // Use "IOUSBHostDevice" (macOS 13+) instead of deprecated kIOUSBDeviceClassName
+            guardedDict.dict = IOServiceMatching("IOUSBHostDevice");
             if (guardedDict.dict == nullptr) {
                 continue;
             }
@@ -382,6 +384,9 @@ bool RazerDevice::connect() {
 
                 // DETECT MODE: Check if this is wireless or wired PID
                 isDongle_ = (pid == wirelessPid);
+
+                // Store wired PID for cable-charging detection
+                connectedWiredPid_ = wiredPid;
 
                 const char* mode = isDongle_ ? "Wireless/Dongle" : "Wired/Charging";
                 std::cout << "Connected to " << deviceName_
@@ -452,6 +457,46 @@ bool RazerDevice::isConnected() const {
     IOReturn kr = (*usbInterface_)->GetInterfaceNumber(usbInterface_, &interfaceNumber);
 
     return (kr == kIOReturnSuccess && interfaceNumber == TARGET_INTERFACE);
+}
+
+bool RazerDevice::isWiredDevicePresent() const {
+    // Check if the wired variant of the connected mouse exists in USB services.
+    // Used to detect charging via cable while connected via dongle.
+    if (connectedWiredPid_ == 0) {
+        return false;
+    }
+
+    int vid = VENDOR_ID;
+    int pid = connectedWiredPid_;
+
+    CFMutableDictionaryRef matchDict = IOServiceMatching("IOUSBHostDevice");
+    if (!matchDict) {
+        return false;
+    }
+
+    CFNumberRef vidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
+    CFNumberRef pidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
+    CFDictionarySetValue(matchDict, CFSTR(kUSBVendorID), vidRef);
+    CFDictionarySetValue(matchDict, CFSTR(kUSBProductID), pidRef);
+    CFRelease(vidRef);
+    CFRelease(pidRef);
+
+    // IOServiceGetMatchingServices takes ownership of matchDict
+    io_iterator_t iterator;
+    kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault, matchDict, &iterator);
+    if (kr != KERN_SUCCESS) {
+        return false;
+    }
+
+    io_service_t service = IOIteratorNext(iterator);
+    IOObjectRelease(iterator);
+
+    if (service != 0) {
+        IOObjectRelease(service);
+        return true;
+    }
+
+    return false;
 }
 
 bool RazerDevice::setDeviceMode(uint8_t mode, uint8_t param) {
