@@ -103,7 +103,8 @@ void RazerDevice::startMonitoring(DeviceCallback callback, void* context) {
 
     // Create matching dictionary for Razer devices
     // NOTE: We only match on VID (not PID) to detect both Dongle (0xA6) and Wired (0xA5)
-    CFMutableDictionaryRef matchingDict = IOServiceMatching(kIOUSBDeviceClassName);
+    // Use "IOUSBHostDevice" (macOS 13+) instead of deprecated kIOUSBDeviceClassName
+    CFMutableDictionaryRef matchingDict = IOServiceMatching("IOUSBHostDevice");
     if (!matchingDict) {
         std::cerr << "Failed to create matching dictionary" << std::endl;
         // Cleanup notification port on error
