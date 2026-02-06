@@ -205,6 +205,8 @@ static void onDeviceChange(void* context) {
         if (lastBatteryLevel_ > 0) {
             NSLog(@"WARNING: Using cached battery level: %d%%", lastBatteryLevel_);
             [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:isCharging];
+        } else if (isCharging) {
+            [self setDisconnectedState:@"Charging via USB-C"];
         } else {
             [self setDisconnectedState:@"Battery query failed"];
         }
