@@ -6,6 +6,7 @@
 
 @interface BatteryMonitorApp : NSObject <NSApplicationDelegate> {
     NSStatusItem* statusItem_;
+    NSMenuItem* statusMenuItem_;
     RazerDevice* razerDevice_;
     NSTimer* pollTimer_;
     uint8_t lastBatteryLevel_;
@@ -15,6 +16,7 @@
 
 - (void)updateBatteryDisplay;
 - (void)updateBatteryDisplayWithLevel:(uint8_t)batteryPercent charging:(bool)isCharging;
+- (void)setDisconnectedState:(NSString*)statusText;
 - (void)pollBattery:(NSTimer*)timer;
 - (void)connectToDevice;
 - (void)handleUSBEvent;
@@ -63,17 +65,23 @@ static void onDeviceChange(void* context) {
     
     // Create menu
     NSMenu* menu = [[NSMenu alloc] init];
-    
-    NSMenuItem* refreshItem = [[NSMenuItem alloc] initWithTitle:@"Refresh" 
-                                                         action:@selector(manualRefresh:) 
+
+    statusMenuItem_ = [[NSMenuItem alloc] initWithTitle:@"Starting..." action:nil keyEquivalent:@""];
+    [statusMenuItem_ setEnabled:NO];
+    [menu addItem:statusMenuItem_];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* refreshItem = [[NSMenuItem alloc] initWithTitle:@"Refresh"
+                                                         action:@selector(manualRefresh:)
                                                   keyEquivalent:@"r"];
     [refreshItem setTarget:self];
     [menu addItem:refreshItem];
-    
+
     [menu addItem:[NSMenuItem separatorItem]];
-    
-    NSMenuItem* quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" 
-                                                       action:@selector(terminate:) 
+
+    NSMenuItem* quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit"
+                                                       action:@selector(terminate:)
                                                 keyEquivalent:@"q"];
     [quitItem setTarget:NSApp];
     [menu addItem:quitItem];
@@ -91,6 +99,17 @@ static void onDeviceChange(void* context) {
     [self performSelector:@selector(connectToDevice) withObject:nil afterDelay:0.5];
 }
 
+- (void)setDisconnectedState:(NSString*)statusText {
+    // Show only icon (no text) in menu bar to save space
+    NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
+    if (icon) {
+        statusItem_.button.image = icon;
+    }
+    statusItem_.button.title = @"";
+    statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
+    statusMenuItem_.title = statusText;
+}
+
 - (void)handleUSBEvent {
     NSLog(@"USB event detected - refreshing...");
 
@@ -106,26 +125,11 @@ static void onDeviceChange(void* context) {
     // Disconnect stale USB handle
     razerDevice_->disconnect();
 
-    // Try to reconnect once. If it fails, show "Disconnected" and let
-    // the 10s poll timer handle further reconnect attempts.
+    // Try to reconnect once. If it fails, let the 10s poll timer retry.
     if (razerDevice_->connect()) {
         [self updateBatteryDisplay];
     } else {
-        NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
-        if (icon) {
-            statusItem_.button.image = icon;
-            statusItem_.button.title = @"Disconnected";
-        } else {
-            statusItem_.button.image = nil;
-            statusItem_.button.title = @"🖱️ Disconnected";
-        }
-        NSDictionary* attrs = @{
-            NSForegroundColorAttributeName: [NSColor systemGrayColor],
-            NSFontAttributeName: [NSFont menuBarFontOfSize:0]
-        };
-        NSString* title = icon ? @"Disconnected" : @"🖱️ Disconnected";
-        statusItem_.button.attributedTitle = [[NSAttributedString alloc]
-            initWithString:title attributes:attrs];
+        [self setDisconnectedState:@"Disconnected"];
     }
 }
 
@@ -137,15 +141,8 @@ static void onDeviceChange(void* context) {
 - (void)connectToDevice {
     // Try to connect
     if (!razerDevice_->connect()) {
-        NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
-        if (icon) {
-            statusItem_.button.image = icon;
-            statusItem_.button.title = @"Not Found";
-        } else {
-            statusItem_.button.image = nil;
-            statusItem_.button.title = @"🖱️ Not Found";
-        }
-        NSLog(@"Failed to connect to Razer Viper V2 Pro");
+        [self setDisconnectedState:@"No Razer mouse found"];
+        NSLog(@"Failed to connect to Razer device");
 
         // Retry in 10 seconds if initial connection fails
         [self performSelector:@selector(connectToDevice) withObject:nil afterDelay:10.0];
@@ -186,14 +183,7 @@ static void onDeviceChange(void* context) {
         NSLog(@"Device not connected, attempting reconnect...");
         if (!razerDevice_->connect()) {
             NSLog(@"ERROR: Failed to reconnect to device");
-            NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
-            if (icon) {
-                statusItem_.button.image = icon;
-                statusItem_.button.title = @"Disconnected";
-            } else {
-                statusItem_.button.image = nil;
-                statusItem_.button.title = @"🖱️ Disconnected";
-            }
+            [self setDisconnectedState:@"Disconnected"];
             return;
         }
         NSLog(@"Successfully reconnected to Razer device");
@@ -209,79 +199,53 @@ static void onDeviceChange(void* context) {
         }
         [self updateBatteryDisplayWithLevel:batteryPercent charging:isCharging];
     } else {
-        // If query fails, show cached value with (?) indicator to avoid flickering
+        // Battery query failed - check cable and use cached value
         NSLog(@"ERROR: Battery query failed");
-        NSString* errorText;
-        NSString* errorTextWithEmoji;
-        NSColor* errorColor = [NSColor systemGrayColor];
+        bool isCharging = razerDevice_->isWiredDevicePresent();
         if (lastBatteryLevel_ > 0) {
             NSLog(@"WARNING: Using cached battery level: %d%%", lastBatteryLevel_);
-            errorText = [NSString stringWithFormat:@"%d%% (?)", lastBatteryLevel_];
-            errorTextWithEmoji = [NSString stringWithFormat:@"🖱️ %d%% (?)", lastBatteryLevel_];
+            [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:isCharging];
         } else {
-            errorText = @"Error";
-            errorTextWithEmoji = @"🖱️ Error";
+            [self setDisconnectedState:@"Battery query failed"];
         }
-
-        NSImage* icon = [self mouseIconWithColor:errorColor];
-        if (icon) {
-            statusItem_.button.image = icon;
-            statusItem_.button.title = errorText;
-        } else {
-            statusItem_.button.image = nil;
-            statusItem_.button.title = errorTextWithEmoji;
-        }
-
-        NSString* finalTitle = icon ? errorText : errorTextWithEmoji;
-        NSDictionary* attrs = @{
-            NSForegroundColorAttributeName: errorColor,
-            NSFontAttributeName: [NSFont menuBarFontOfSize:0]
-        };
-        statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:finalTitle attributes:attrs];
     }
 }
 
 - (void)updateBatteryDisplayWithLevel:(uint8_t)batteryPercent charging:(bool)isCharging {
     lastBatteryLevel_ = batteryPercent;
 
-    // Format title text (battery percentage + charging indicator)
+    // Format menu bar text
     NSString* titleText;
-    NSString* titleTextWithEmoji;
     if (isCharging) {
         titleText = [NSString stringWithFormat:@"%d%% ⚡", batteryPercent];
-        titleTextWithEmoji = [NSString stringWithFormat:@"🖱️ %d%% ⚡", batteryPercent];
     } else {
         titleText = [NSString stringWithFormat:@"%d%%", batteryPercent];
-        titleTextWithEmoji = [NSString stringWithFormat:@"🖱️ %d%%", batteryPercent];
     }
 
-    // Color based on battery level (for both icon and text)
+    // Color based on battery level
     NSColor* displayColor;
     if (batteryPercent <= 20) {
-        displayColor = [NSColor systemRedColor];      // Critical: Red (0-20%)
+        displayColor = [NSColor systemRedColor];
     } else if (batteryPercent <= 40) {
-        displayColor = [NSColor systemYellowColor];   // Warning: Yellow (21-40%)
+        displayColor = [NSColor systemYellowColor];
     } else {
-        displayColor = [NSColor systemGreenColor];    // Good: Green (41-100%)
+        displayColor = [NSColor systemGreenColor];
     }
 
-    // Set icon (SF Symbol or emoji fallback)
+    // Set icon and text in menu bar
     NSImage* icon = [self mouseIconWithColor:displayColor];
     if (icon) {
         statusItem_.button.image = icon;
-        statusItem_.button.title = titleText;
-    } else {
-        statusItem_.button.image = nil;
-        statusItem_.button.title = titleTextWithEmoji;
     }
-
-    // Apply colored text
-    NSString* finalTitle = icon ? titleText : titleTextWithEmoji;
     NSDictionary* attrs = @{
         NSForegroundColorAttributeName: displayColor,
         NSFontAttributeName: [NSFont menuBarFontOfSize:0]
     };
-    statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:finalTitle attributes:attrs];
+    statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:titleText attributes:attrs];
+
+    // Update dropdown menu status line
+    NSString* mode = isCharging ? @"Charging via USB-C" : @"Wireless";
+    statusMenuItem_.title = [NSString stringWithFormat:@"Razer Viper V2 Pro — %@ — %d%%", mode, batteryPercent];
 
     // Low battery notification
     if (batteryPercent < 20 && batteryPercent > 0 && !notificationShown_ && !isCharging) {
@@ -325,21 +289,7 @@ static void onDeviceChange(void* context) {
                 });
             } else {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
-                    if (icon) {
-                        statusItem_.button.image = icon;
-                        statusItem_.button.title = @"Disconnected";
-                    } else {
-                        statusItem_.button.image = nil;
-                        statusItem_.button.title = @"🖱️ Disconnected";
-                    }
-                    NSDictionary* attrs = @{
-                        NSForegroundColorAttributeName: [NSColor systemGrayColor],
-                        NSFontAttributeName: [NSFont menuBarFontOfSize:0]
-                    };
-                    NSString* title = icon ? @"Disconnected" : @"🖱️ Disconnected";
-                    statusItem_.button.attributedTitle = [[NSAttributedString alloc]
-                        initWithString:title attributes:attrs];
+                    [self setDisconnectedState:@"Disconnected"];
                 });
             }
             return;
