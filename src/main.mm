@@ -280,7 +280,7 @@ static void onDeviceChange(void* context) {
         NSString* finalTitle = icon ? titleText : titleTextWithEmoji;
         NSDictionary* attrs = @{
             NSForegroundColorAttributeName: displayColor,
-            NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+            NSFontAttributeName: [NSFont menuBarFontOfSize:11.0]
         };
         statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:finalTitle attributes:attrs];
         
