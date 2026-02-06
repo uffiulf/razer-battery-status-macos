@@ -113,6 +113,23 @@ static void onDeviceChange(void* context) {
 
     razerDevice_->disconnect();
 
+    // Immediately show disconnected state in UI
+    NSImage* disconnectedIcon = [self mouseIconWithColor:[NSColor systemGrayColor]];
+    if (disconnectedIcon) {
+        statusItem_.button.image = disconnectedIcon;
+        statusItem_.button.title = @"Reconnecting...";
+    } else {
+        statusItem_.button.image = nil;
+        statusItem_.button.title = @"🖱️ Reconnecting...";
+    }
+    NSDictionary* grayAttrs = @{
+        NSForegroundColorAttributeName: [NSColor systemGrayColor],
+        NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+    };
+    statusItem_.button.attributedTitle = [[NSAttributedString alloc]
+        initWithString:(disconnectedIcon ? @"Reconnecting..." : @"🖱️ Reconnecting...")
+        attributes:grayAttrs];
+
     // Single managed reconnect sequence with exponential backoff
     __weak __typeof(self) weakSelf = self;
     __block int attempt = 0;
