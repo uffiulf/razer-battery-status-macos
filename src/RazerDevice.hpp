@@ -61,6 +61,7 @@ public:
     bool queryBattery(uint8_t& batteryPercent);
     bool queryChargingStatus(bool& isCharging);
     bool isConnected() const;
+    bool isDongle() const;
     bool isWiredDevicePresent() const;
 
     // Hotplug monitoring

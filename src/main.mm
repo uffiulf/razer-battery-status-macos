@@ -350,18 +350,20 @@ static void onDeviceChange(void* context) {
         bool isCharging = false;
         if (success) {
             razerDevice_->queryChargingStatus(isCharging);
-            // Fallback: if wired PID is present in IOKit, mouse is charging via cable
-            if (!isCharging && razerDevice_->isWiredDevicePresent()) {
-                isCharging = true;
-            }
+        }
+        // Always check cable presence (works even when battery query fails)
+        if (!isCharging && razerDevice_->isWiredDevicePresent()) {
+            isCharging = true;
         }
 
-        // Update UI on main thread with already-queried results
-        if (success) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self updateBatteryDisplayWithLevel:batteryPercent charging:isCharging];
-            });
-        }
+        // Update UI on main thread
+        uint8_t displayLevel = success ? batteryPercent : lastBatteryLevel_;
+        bool hasLevel = success || (lastBatteryLevel_ > 0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (hasLevel) {
+                [self updateBatteryDisplayWithLevel:displayLevel charging:isCharging];
+            }
+        });
     });
 }
 

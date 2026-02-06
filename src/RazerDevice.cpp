@@ -347,9 +347,9 @@ bool RazerDevice::connect() {
 
     // Lambda to try connecting to a specific device PID
     auto tryConnectToDevice = [&](uint16_t wirelessPid, uint16_t wiredPid, const char* deviceName) -> bool {
-        // Try wired first: when USB-C cable is connected, prefer direct connection
-        // over dongle so we get real battery level instead of status 0x04
-        uint16_t pidsToTry[] = { wiredPid, wirelessPid };
+        // Always prefer dongle - the wired interface doesn't support HID control
+        // transfers for battery queries. Cable detection uses isWiredDevicePresent().
+        uint16_t pidsToTry[] = { wirelessPid, wiredPid };
 
         for (int j = 0; j < 2; j++) {
             uint16_t pid = pidsToTry[j];
@@ -459,6 +459,10 @@ bool RazerDevice::isConnected() const {
     IOReturn kr = (*usbInterface_)->GetInterfaceNumber(usbInterface_, &interfaceNumber);
 
     return (kr == kIOReturnSuccess && interfaceNumber == TARGET_INTERFACE);
+}
+
+bool RazerDevice::isDongle() const {
+    return isDongle_;
 }
 
 bool RazerDevice::isWiredDevicePresent() const {
