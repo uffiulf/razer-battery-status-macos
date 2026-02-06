@@ -214,7 +214,18 @@ static void onDeviceChange(void* context) {
             NSLog(@"WARNING: Using cached battery level: %d%%", lastBatteryLevel_);
             [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:isCharging];
         } else if (isCharging) {
-            [self setDisconnectedState:@"Charging via USB-C"];
+            // New logic: Show ONLY the lightning bolt icon in green when battery is unknown
+            NSImage* icon = [self mouseIconWithColor:nil];
+            if (icon) {
+                [icon setTemplate:YES];
+                statusItem_.button.image = icon;
+                statusItem_.button.contentTintColor = nil; // Use system color for icon
+            }
+            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@"⚡" attributes:@{
+                NSForegroundColorAttributeName: [NSColor systemGreenColor],
+                NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+            }];
+            statusMenuItem_.title = @"Razer Viper V2 Pro — Charging via USB-C";
         } else {
             [self setDisconnectedState:@"Battery query failed"];
         }
@@ -234,23 +245,28 @@ static void onDeviceChange(void* context) {
         titleText = [NSString stringWithFormat:@"%d%%", batteryPercent];
     }
 
-    // Color based on battery level
-    NSColor* displayColor;
-    if (batteryPercent <= 20) {
-        displayColor = [NSColor systemRedColor];
-    } else if (batteryPercent <= 40) {
-        displayColor = [NSColor systemYellowColor];
+    // Design choice: Text color based on status, Icon remains system default
+    NSColor* textColor;
+    if (isCharging) {
+        textColor = [NSColor systemGreenColor];
+    } else if (batteryPercent <= 20) {
+        textColor = [NSColor systemRedColor];
+    } else if (batteryPercent <= 30) {
+        textColor = [NSColor systemYellowColor];
     } else {
-        displayColor = [NSColor systemGreenColor];
+        textColor = [NSColor controlTextColor]; // Standard white/black
     }
 
-    // Set icon and text in menu bar
-    NSImage* icon = [self mouseIconWithColor:displayColor];
+    // Set icon (Always template mode, no manual tinting)
+    NSImage* icon = [self mouseIconWithColor:nil];
     if (icon) {
+        [icon setTemplate:YES];
         statusItem_.button.image = icon;
+        statusItem_.button.contentTintColor = nil; // Clear any previous tint
     }
+    
     NSDictionary* attrs = @{
-        NSForegroundColorAttributeName: displayColor,
+        NSForegroundColorAttributeName: textColor,
         NSFontAttributeName: [NSFont menuBarFontOfSize:0]
     };
     statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:titleText attributes:attrs];
@@ -266,7 +282,7 @@ static void onDeviceChange(void* context) {
     }
     statusMenuItem_.title = [NSString stringWithFormat:@"Razer Viper V2 Pro — %@ — %d%%", mode, batteryPercent];
 
-    // Low battery notification
+    // Low battery notification (only when not charging)
     if (batteryPercent < 20 && batteryPercent > 0 && !notificationShown_ && !isCharging) {
         [self showLowBatteryNotification:batteryPercent];
         notificationShown_ = true;
