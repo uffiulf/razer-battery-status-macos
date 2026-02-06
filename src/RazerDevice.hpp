@@ -61,7 +61,9 @@ public:
     bool queryBattery(uint8_t& batteryPercent);
     bool queryChargingStatus(bool& isCharging);
     bool isConnected() const;
-    
+    bool isDongle() const;
+    bool isWiredDevicePresent() const;
+
     // Hotplug monitoring
     void startMonitoring(DeviceCallback callback, void* context);
     void stopMonitoring();
@@ -93,6 +95,7 @@ private:
 
     // Wired vs. Wireless detection
     bool isDongle_;  // true = Wireless (Dongle), false = Wired (Direct USB)
+    uint16_t connectedWiredPid_;  // Wired PID for the connected device (for cable detection)
     std::string deviceName_;  // Human-readable device name
     std::string getDeviceName(io_service_t device);
     std::string getDeviceNameByPid(uint16_t pid);
@@ -111,6 +114,8 @@ private:
     void calculateChecksum(uint8_t* report);
     bool sendReport(const uint8_t* report);
     bool readResponse(uint8_t* buffer, size_t bufferSize);
+    bool sendReportLocked(const uint8_t* report);      // Requires usbMutex_ held
+    bool readResponseLocked(uint8_t* buffer, size_t bufferSize);  // Requires usbMutex_ held
     bool findInterface2(io_service_t device);
     bool setDeviceMode(uint8_t mode, uint8_t param);
     

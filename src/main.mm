@@ -4,34 +4,31 @@
 #import <UserNotifications/UserNotifications.h>
 #import "RazerDevice.hpp"
 
-// Forward declaration
-@class BatteryMonitorApp;
-
-// Static callback for RazerDevice monitoring
-static void onDeviceChange(void* context) {
-    BatteryMonitorApp* app = (__bridge BatteryMonitorApp*)context;
-    // Ensure we run on main thread for UI updates
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [app performSelector:@selector(handleUSBEvent)];
-    });
-}
-
 @interface BatteryMonitorApp : NSObject <NSApplicationDelegate> {
     NSStatusItem* statusItem_;
     RazerDevice* razerDevice_;
     NSTimer* pollTimer_;
     uint8_t lastBatteryLevel_;
     bool notificationShown_;
-    dispatch_block_t pendingReconnect_;
     dispatch_queue_t batteryQueue_;
 }
 
 - (void)updateBatteryDisplay;
+- (void)updateBatteryDisplayWithLevel:(uint8_t)batteryPercent charging:(bool)isCharging;
 - (void)pollBattery:(NSTimer*)timer;
 - (void)connectToDevice;
 - (void)handleUSBEvent;
 - (NSImage*)mouseIconWithColor:(NSColor*)color;
 @end
+
+// Static callback for RazerDevice monitoring (must be after @interface)
+static void onDeviceChange(void* context) {
+    BatteryMonitorApp* app = (__bridge BatteryMonitorApp*)context;
+    // Ensure we run on main thread for UI updates
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [app handleUSBEvent];
+    });
+}
 
 @implementation BatteryMonitorApp
 
@@ -44,34 +41,15 @@ static void onDeviceChange(void* context) {
         pollTimer_ = nil;
         lastBatteryLevel_ = 0;
         notificationShown_ = false;
-        pendingReconnect_ = nil;
         batteryQueue_ = dispatch_queue_create("no.ulfsec.battery", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
 
-- (void)dealloc {
-    if (pendingReconnect_) {
-        dispatch_block_cancel(pendingReconnect_);
-        pendingReconnect_ = nil;
-    }
-    if (pollTimer_) {
-        [pollTimer_ invalidate];
-        pollTimer_ = nil;
-    }
-    if (razerDevice_) {
-        // Stop monitoring before deleting
-        razerDevice_->stopMonitoring();
-        delete razerDevice_;
-        razerDevice_ = nil;
-    }
-    [super dealloc];
-}
-
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
     // STEP 1: Create UI FIRST
     NSStatusBar* statusBar = [NSStatusBar systemStatusBar];
-    statusItem_ = [[statusBar statusItemWithLength:NSVariableStatusItemLength] retain];
+    statusItem_ = [statusBar statusItemWithLength:NSVariableStatusItemLength];
     
     NSImage* mouseIcon = [self mouseIconWithColor:[NSColor whiteColor]];
     if (mouseIcon) {
@@ -120,52 +98,35 @@ static void onDeviceChange(void* context) {
         return;
     }
 
-    // Cancel any pending reconnect attempts
-    if (pendingReconnect_) {
-        dispatch_block_cancel(pendingReconnect_);
-        pendingReconnect_ = nil;
-    }
+    // Cancel any pending connectToDevice retries
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(connectToDevice)
+                                               object:nil];
 
+    // Disconnect stale USB handle
     razerDevice_->disconnect();
 
-    // Single managed reconnect sequence with exponential backoff
-    __block int attempt = 0;
-    __block void (^reconnectBlock)(void) = [^{
-        if (!razerDevice_) return;
-
-        if (razerDevice_->connect()) {
-            [self updateBatteryDisplay];
-            return;
-        }
-
-        attempt++;
-        if (attempt < 5) {
-            // Exponential backoff: 2s, 4s, 8s, 16s
-            double delay = pow(2.0, attempt);
-            NSLog(@"Reconnect attempt %d failed, retrying in %.0fs", attempt, delay);
-
-            pendingReconnect_ = Block_copy(reconnectBlock);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                          dispatch_get_main_queue(), pendingReconnect_);
+    // Try to reconnect once. If it fails, show "Disconnected" and let
+    // the 10s poll timer handle further reconnect attempts.
+    if (razerDevice_->connect()) {
+        [self updateBatteryDisplay];
+    } else {
+        NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
+        if (icon) {
+            statusItem_.button.image = icon;
+            statusItem_.button.title = @"Disconnected";
         } else {
-            NSLog(@"All reconnect attempts failed after %d tries", attempt);
-            // Only show "Not Found" if ALL attempts fail
-            NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
-            if (icon) {
-                statusItem_.button.image = icon;
-                statusItem_.button.title = @"Not Found";
-            } else {
-                statusItem_.button.image = nil;
-                statusItem_.button.title = @"🖱️ Not Found";
-            }
-            pendingReconnect_ = nil;
+            statusItem_.button.image = nil;
+            statusItem_.button.title = @"🖱️ Disconnected";
         }
-    } copy];
-
-    // Start first reconnect attempt after 1 second
-    pendingReconnect_ = reconnectBlock;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                  dispatch_get_main_queue(), pendingReconnect_);
+        NSDictionary* attrs = @{
+            NSForegroundColorAttributeName: [NSColor systemGrayColor],
+            NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+        };
+        NSString* title = icon ? @"Disconnected" : @"🖱️ Disconnected";
+        statusItem_.button.attributedTitle = [[NSAttributedString alloc]
+            initWithString:title attributes:attrs];
+    }
 }
 
 - (void)manualRefresh:(id)sender {
@@ -197,7 +158,7 @@ static void onDeviceChange(void* context) {
     // Set up polling timer (30 seconds)
     // We still keep this as a fallback for battery % changes over time
     if (!pollTimer_) {
-        pollTimer_ = [NSTimer scheduledTimerWithTimeInterval:30.0
+        pollTimer_ = [NSTimer scheduledTimerWithTimeInterval:10.0
                                                        target:self
                                                      selector:@selector(pollBattery:)
                                                      userInfo:nil
@@ -220,7 +181,8 @@ static void onDeviceChange(void* context) {
     }
 
     if (!razerDevice_->isConnected()) {
-        // Only show disconnected if we really can't connect after a retry
+        // Clean up stale state before reconnecting (resets isDongle_ etc.)
+        razerDevice_->disconnect();
         NSLog(@"Device not connected, attempting reconnect...");
         if (!razerDevice_->connect()) {
             NSLog(@"ERROR: Failed to reconnect to device");
@@ -239,58 +201,13 @@ static void onDeviceChange(void* context) {
     
     uint8_t batteryPercent = 0;
     if (razerDevice_->queryBattery(batteryPercent)) {
-        lastBatteryLevel_ = batteryPercent;
-        
-        // Check charging status
         bool isCharging = false;
         razerDevice_->queryChargingStatus(isCharging);
-        
-        // Format title text (battery percentage + charging indicator)
-        NSString* titleText;
-        NSString* titleTextWithEmoji;
-        if (isCharging) {
-            titleText = [NSString stringWithFormat:@"%d%% ⚡", batteryPercent];
-            titleTextWithEmoji = [NSString stringWithFormat:@"🖱️ %d%% ⚡", batteryPercent];
-        } else {
-            titleText = [NSString stringWithFormat:@"%d%%", batteryPercent];
-            titleTextWithEmoji = [NSString stringWithFormat:@"🖱️ %d%%", batteryPercent];
+        // Fallback: if wired PID is present in IOKit, mouse is charging via cable
+        if (!isCharging && razerDevice_->isWiredDevicePresent()) {
+            isCharging = true;
         }
-        
-        // Color based on battery level (for both icon and text)
-        NSColor* displayColor;
-        if (batteryPercent <= 20) {
-            displayColor = [NSColor systemRedColor];      // Critical: Red (0-20%)
-        } else if (batteryPercent <= 40) {
-            displayColor = [NSColor systemYellowColor];   // Warning: Yellow (21-40%)
-        } else {
-            displayColor = [NSColor systemGreenColor];    // Good: Green (41-100%)
-        }
-        
-        // Set icon (SF Symbol or emoji fallback)
-        NSImage* icon = [self mouseIconWithColor:displayColor];
-        if (icon) {
-            statusItem_.button.image = icon;
-            statusItem_.button.title = titleText;
-        } else {
-            statusItem_.button.image = nil;
-            statusItem_.button.title = titleTextWithEmoji;
-        }
-        
-        // Apply colored text
-        NSString* finalTitle = icon ? titleText : titleTextWithEmoji;
-        NSDictionary* attrs = @{
-            NSForegroundColorAttributeName: displayColor,
-            NSFontAttributeName: [NSFont menuBarFontOfSize:0]
-        };
-        statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:finalTitle attributes:attrs];
-        
-        // Low battery notification
-        if (batteryPercent < 20 && batteryPercent > 0 && !notificationShown_ && !isCharging) {
-            [self showLowBatteryNotification:batteryPercent];
-            notificationShown_ = true;
-        } else if (batteryPercent >= 20 || isCharging) {
-            notificationShown_ = false;
-        }
+        [self updateBatteryDisplayWithLevel:batteryPercent charging:isCharging];
     } else {
         // If query fails, show cached value with (?) indicator to avoid flickering
         NSLog(@"ERROR: Battery query failed");
@@ -305,7 +222,7 @@ static void onDeviceChange(void* context) {
             errorText = @"Error";
             errorTextWithEmoji = @"🖱️ Error";
         }
-        
+
         NSImage* icon = [self mouseIconWithColor:errorColor];
         if (icon) {
             statusItem_.button.image = icon;
@@ -314,7 +231,7 @@ static void onDeviceChange(void* context) {
             statusItem_.button.image = nil;
             statusItem_.button.title = errorTextWithEmoji;
         }
-        
+
         NSString* finalTitle = icon ? errorText : errorTextWithEmoji;
         NSDictionary* attrs = @{
             NSForegroundColorAttributeName: errorColor,
@@ -324,22 +241,129 @@ static void onDeviceChange(void* context) {
     }
 }
 
+- (void)updateBatteryDisplayWithLevel:(uint8_t)batteryPercent charging:(bool)isCharging {
+    lastBatteryLevel_ = batteryPercent;
+
+    // Format title text (battery percentage + charging indicator)
+    NSString* titleText;
+    NSString* titleTextWithEmoji;
+    if (isCharging) {
+        titleText = [NSString stringWithFormat:@"%d%% ⚡", batteryPercent];
+        titleTextWithEmoji = [NSString stringWithFormat:@"🖱️ %d%% ⚡", batteryPercent];
+    } else {
+        titleText = [NSString stringWithFormat:@"%d%%", batteryPercent];
+        titleTextWithEmoji = [NSString stringWithFormat:@"🖱️ %d%%", batteryPercent];
+    }
+
+    // Color based on battery level (for both icon and text)
+    NSColor* displayColor;
+    if (batteryPercent <= 20) {
+        displayColor = [NSColor systemRedColor];      // Critical: Red (0-20%)
+    } else if (batteryPercent <= 40) {
+        displayColor = [NSColor systemYellowColor];   // Warning: Yellow (21-40%)
+    } else {
+        displayColor = [NSColor systemGreenColor];    // Good: Green (41-100%)
+    }
+
+    // Set icon (SF Symbol or emoji fallback)
+    NSImage* icon = [self mouseIconWithColor:displayColor];
+    if (icon) {
+        statusItem_.button.image = icon;
+        statusItem_.button.title = titleText;
+    } else {
+        statusItem_.button.image = nil;
+        statusItem_.button.title = titleTextWithEmoji;
+    }
+
+    // Apply colored text
+    NSString* finalTitle = icon ? titleText : titleTextWithEmoji;
+    NSDictionary* attrs = @{
+        NSForegroundColorAttributeName: displayColor,
+        NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+    };
+    statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:finalTitle attributes:attrs];
+
+    // Low battery notification
+    if (batteryPercent < 20 && batteryPercent > 0 && !notificationShown_ && !isCharging) {
+        [self showLowBatteryNotification:batteryPercent];
+        notificationShown_ = true;
+    } else if (batteryPercent >= 20 || isCharging) {
+        notificationShown_ = false;
+    }
+}
+
 - (void)pollBattery:(NSTimer*)timer {
     (void)timer;
     // Run battery query on background thread to avoid UI freezing
     dispatch_async(batteryQueue_, ^{
         if (!razerDevice_) return;
 
+        // Detect disconnection (fallback when IOKit notifications don't fire)
+        if (!razerDevice_->isConnected()) {
+            razerDevice_->disconnect();
+            NSLog(@"Poll detected disconnect, attempting reconnect...");
+
+            bool reconnected = razerDevice_->connect();
+            if (reconnected) {
+                uint8_t batteryPercent = 0;
+                bool success = razerDevice_->queryBattery(batteryPercent);
+                bool isCharging = false;
+                if (success) {
+                    razerDevice_->queryChargingStatus(isCharging);
+                    // Fallback: if wired PID is present in IOKit, mouse is charging via cable
+                    if (!isCharging && razerDevice_->isWiredDevicePresent()) {
+                        isCharging = true;
+                    }
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (success) {
+                        NSLog(@"Reconnected and got battery: %d%%", batteryPercent);
+                        [self updateBatteryDisplayWithLevel:batteryPercent charging:isCharging];
+                    } else {
+                        [self updateBatteryDisplay];
+                    }
+                });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
+                    if (icon) {
+                        statusItem_.button.image = icon;
+                        statusItem_.button.title = @"Disconnected";
+                    } else {
+                        statusItem_.button.image = nil;
+                        statusItem_.button.title = @"🖱️ Disconnected";
+                    }
+                    NSDictionary* attrs = @{
+                        NSForegroundColorAttributeName: [NSColor systemGrayColor],
+                        NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+                    };
+                    NSString* title = icon ? @"Disconnected" : @"🖱️ Disconnected";
+                    statusItem_.button.attributedTitle = [[NSAttributedString alloc]
+                        initWithString:title attributes:attrs];
+                });
+            }
+            return;
+        }
+
         uint8_t batteryPercent = 0;
         bool success = razerDevice_->queryBattery(batteryPercent);
-        (void)batteryPercent; // Used only to trigger the query
+        bool isCharging = false;
+        if (success) {
+            razerDevice_->queryChargingStatus(isCharging);
+        }
+        // Always check cable presence (works even when battery query fails)
+        if (!isCharging && razerDevice_->isWiredDevicePresent()) {
+            isCharging = true;
+        }
 
         // Update UI on main thread
-        if (success) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self updateBatteryDisplay];
-            });
-        }
+        uint8_t displayLevel = success ? batteryPercent : lastBatteryLevel_;
+        bool hasLevel = success || (lastBatteryLevel_ > 0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (hasLevel) {
+                [self updateBatteryDisplayWithLevel:displayLevel charging:isCharging];
+            }
+        });
     });
 }
 
@@ -401,10 +425,6 @@ static void onDeviceChange(void* context) {
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
     (void)notification;
-    if (pendingReconnect_) {
-        dispatch_block_cancel(pendingReconnect_);
-        pendingReconnect_ = nil;
-    }
     if (pollTimer_) {
         [pollTimer_ invalidate];
         pollTimer_ = nil;
@@ -412,6 +432,8 @@ static void onDeviceChange(void* context) {
     if (razerDevice_) {
         razerDevice_->stopMonitoring();
         razerDevice_->disconnect();
+        delete razerDevice_;
+        razerDevice_ = nullptr;
     }
 }
 
