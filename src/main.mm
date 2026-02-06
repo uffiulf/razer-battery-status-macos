@@ -201,7 +201,7 @@ static void onDeviceChange(void* context) {
     // Set up polling timer (30 seconds)
     // We still keep this as a fallback for battery % changes over time
     if (!pollTimer_) {
-        pollTimer_ = [NSTimer scheduledTimerWithTimeInterval:30.0
+        pollTimer_ = [NSTimer scheduledTimerWithTimeInterval:10.0
                                                        target:self
                                                      selector:@selector(pollBattery:)
                                                      userInfo:nil
@@ -335,7 +335,50 @@ static void onDeviceChange(void* context) {
     (void)timer;
     // Run battery query on background thread to avoid UI freezing
     dispatch_async(batteryQueue_, ^{
-        if (!razerDevice_ || !razerDevice_->isConnected()) return;
+        if (!razerDevice_) return;
+
+        // Detect disconnection (fallback when IOKit notifications don't fire)
+        if (!razerDevice_->isConnected()) {
+            razerDevice_->disconnect();
+            NSLog(@"Poll detected disconnect, attempting reconnect...");
+
+            bool reconnected = razerDevice_->connect();
+            if (reconnected) {
+                uint8_t batteryPercent = 0;
+                bool success = razerDevice_->queryBattery(batteryPercent);
+                bool isCharging = false;
+                if (success) {
+                    razerDevice_->queryChargingStatus(isCharging);
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (success) {
+                        NSLog(@"Reconnected and got battery: %d%%", batteryPercent);
+                        [self updateBatteryDisplayWithLevel:batteryPercent charging:isCharging];
+                    } else {
+                        [self updateBatteryDisplay];
+                    }
+                });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
+                    if (icon) {
+                        statusItem_.button.image = icon;
+                        statusItem_.button.title = @"Disconnected";
+                    } else {
+                        statusItem_.button.image = nil;
+                        statusItem_.button.title = @"🖱️ Disconnected";
+                    }
+                    NSDictionary* attrs = @{
+                        NSForegroundColorAttributeName: [NSColor systemGrayColor],
+                        NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+                    };
+                    NSString* title = icon ? @"Disconnected" : @"🖱️ Disconnected";
+                    statusItem_.button.attributedTitle = [[NSAttributedString alloc]
+                        initWithString:title attributes:attrs];
+                });
+            }
+            return;
+        }
 
         uint8_t batteryPercent = 0;
         bool success = razerDevice_->queryBattery(batteryPercent);
