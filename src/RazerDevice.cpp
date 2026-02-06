@@ -347,9 +347,8 @@ bool RazerDevice::connect() {
 
     // Lambda to try connecting to a specific device PID
     auto tryConnectToDevice = [&](uint16_t wirelessPid, uint16_t wiredPid, const char* deviceName) -> bool {
-        // Always prefer dongle - the wired interface doesn't support HID control
-        // transfers for battery queries. Cable detection uses isWiredDevicePresent().
-        uint16_t pidsToTry[] = { wirelessPid, wiredPid };
+        // Always prefer wired connection if available to correctly show charging state immediately.
+        uint16_t pidsToTry[] = { wiredPid, wirelessPid };
 
         for (int j = 0; j < 2; j++) {
             uint16_t pid = pidsToTry[j];
