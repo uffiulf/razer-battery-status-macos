@@ -392,7 +392,11 @@ static void onDeviceChange(void* context) {
     // Request authorization (if not already granted)
     [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
                           completionHandler:^(BOOL granted, NSError* error) {
-        (void)error;
+        if (error) {
+            NSLog(@"ERROR: Failed to request notification authorization: %@", error);
+            return;
+        }
+
         if (!granted) {
             NSLog(@"WARNING: User denied notification authorization");
             return;
