@@ -298,6 +298,9 @@ static void onDeviceChange(void* context) {
     }
     
     NSString* deviceName = [NSString stringWithUTF8String:razerDevice_->deviceName().c_str()];
+    if ([deviceName length] == 0 || [deviceName isEqualToString:@"Unknown Razer Mouse"]) {
+        deviceName = @"Razer Mouse";
+    }
     statusMenuItem_.title = [NSString stringWithFormat:@"%@ — %@ — %d%%", deviceName, mode, batteryPercent];
 
     // Low battery notification (only when not charging)
