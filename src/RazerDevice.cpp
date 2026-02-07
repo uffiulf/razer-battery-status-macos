@@ -51,6 +51,9 @@ const RazerSupportedDevice RazerDevice::SUPPORTED_DEVICES[] = {
     {0x00A8, 0x00A7, "Razer Naga V2 Pro"},
     {0x00BF, 0x00BE, "Razer DeathAdder V4 Pro"},
     {0x00C1, 0x00C0, "Razer Viper V3 Pro"},
+    {0x00CD, 0x00CC, "Razer Basilisk V3 Pro 35K"},
+    {0x00B4, 0x0000, "Razer Naga V2 HyperSpeed"},
+    {0x00D1, 0x00D0, "Razer Pro Click V2"},
     {0x0072, 0x0073, "Razer Mamba Wireless"},
     {0x006F, 0x0070, "Razer Lancehead Wireless"},
     {0x0094, 0x0095, "Razer Orochi V2"},
@@ -81,6 +84,10 @@ RazerDevice::~RazerDevice() {
     isShuttingDown_ = true;
     stopMonitoring();
     disconnect();
+}
+
+const std::string& RazerDevice::deviceName() const {
+    return deviceName_;
 }
 
 void RazerDevice::startMonitoring(DeviceCallback callback, void* context) {

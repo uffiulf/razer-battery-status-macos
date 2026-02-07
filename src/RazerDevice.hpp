@@ -63,6 +63,7 @@ public:
     bool isConnected() const;
     bool isDongle() const;
     bool isWiredDevicePresent() const;
+    const std::string& deviceName() const;
 
     // Hotplug monitoring
     void startMonitoring(DeviceCallback callback, void* context);

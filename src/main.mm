@@ -20,7 +20,9 @@
 - (void)pollBattery:(NSTimer*)timer;
 - (void)connectToDevice;
 - (void)handleUSBEvent;
-- (NSImage*)mouseIconWithColor:(NSColor*)color;
+- (NSImage*)mouseIcon;
+- (void)showLowBatteryNotification:(uint8_t)batteryPercent deviceName:(NSString*)name;
+- (void)manualRefresh:(id)sender;
 @end
 
 // Static callback for RazerDevice monitoring (must be after @interface)
@@ -53,7 +55,7 @@ static void onDeviceChange(void* context) {
     NSStatusBar* statusBar = [NSStatusBar systemStatusBar];
     statusItem_ = [statusBar statusItemWithLength:NSVariableStatusItemLength];
     
-    NSImage* mouseIcon = [self mouseIconWithColor:[NSColor whiteColor]];
+    NSImage* mouseIcon = [self mouseIcon];
     if (mouseIcon) {
         statusItem_.button.image = mouseIcon;
         statusItem_.button.title = @"...";
@@ -77,6 +79,12 @@ static void onDeviceChange(void* context) {
                                                   keyEquivalent:@"r"];
     [refreshItem setTarget:self];
     [menu addItem:refreshItem];
+
+    NSMenuItem* loginItem = [[NSMenuItem alloc] initWithTitle:@"Start at Login..."
+                                                       action:@selector(openLoginSettings:)
+                                                keyEquivalent:@""];
+    [loginItem setTarget:self];
+    [menu addItem:loginItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -109,7 +117,7 @@ static void onDeviceChange(void* context) {
 
 - (void)setDisconnectedState:(NSString*)statusText {
     // Show only icon (no text) in menu bar to save space
-    NSImage* icon = [self mouseIconWithColor:[NSColor systemGrayColor]];
+    NSImage* icon = [self mouseIcon];
     if (icon) {
         statusItem_.button.image = icon;
     }
@@ -146,6 +154,13 @@ static void onDeviceChange(void* context) {
     [self handleUSBEvent];
 }
 
+- (void)openLoginSettings:(id)sender {
+    (void)sender;
+    // URL to open Login Items in System Settings (macOS 13+)
+    NSURL* url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.LoginItems-Settings.extension"];
+    [[NSWorkspace sharedWorkspace] openURL:url];
+}
+
 - (void)connectToDevice {
     // Try to connect
     if (!razerDevice_->connect()) {
@@ -174,7 +189,7 @@ static void onDeviceChange(void* context) {
 - (void)updateBatteryDisplay {
     if (razerDevice_ == nil) {
         NSLog(@"ERROR: razerDevice_ is nil");
-        NSImage* icon = [self mouseIconWithColor:[NSColor whiteColor]];
+        NSImage* icon = [self mouseIcon];
         if (icon) {
             statusItem_.button.image = icon;
             statusItem_.button.title = @"...";
@@ -215,9 +230,9 @@ static void onDeviceChange(void* context) {
             [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:isCharging];
         } else if (isCharging) {
             // New logic: Show ONLY the lightning bolt icon in green when battery is unknown
-            NSImage* icon = [self mouseIconWithColor:nil];
+            NSImage* icon = [self mouseIcon]; // Color ignored here
             if (icon) {
-                [icon setTemplate:YES];
+                [icon setTemplate:YES]; // Ensure template mode for tinting
                 statusItem_.button.image = icon;
                 statusItem_.button.contentTintColor = nil; // Use system color for icon
             }
@@ -225,7 +240,8 @@ static void onDeviceChange(void* context) {
                 NSForegroundColorAttributeName: [NSColor systemGreenColor],
                 NSFontAttributeName: [NSFont menuBarFontOfSize:0]
             }];
-            statusMenuItem_.title = @"Razer Viper V2 Pro — Charging via USB-C";
+            NSString* deviceName = [NSString stringWithUTF8String:razerDevice_->deviceName().c_str()];
+            statusMenuItem_.title = [NSString stringWithFormat:@"%@ — Charging via USB-C", deviceName];
         } else {
             [self setDisconnectedState:@"Battery query failed"];
         }
@@ -258,7 +274,7 @@ static void onDeviceChange(void* context) {
     }
 
     // Set icon (Always template mode, no manual tinting)
-    NSImage* icon = [self mouseIconWithColor:nil];
+    NSImage* icon = [self mouseIcon];
     if (icon) {
         [icon setTemplate:YES];
         statusItem_.button.image = icon;
@@ -280,11 +296,13 @@ static void onDeviceChange(void* context) {
     } else {
         mode = @"Wireless";
     }
-    statusMenuItem_.title = [NSString stringWithFormat:@"Razer Viper V2 Pro — %@ — %d%%", mode, batteryPercent];
+    
+    NSString* deviceName = [NSString stringWithUTF8String:razerDevice_->deviceName().c_str()];
+    statusMenuItem_.title = [NSString stringWithFormat:@"%@ — %@ — %d%%", deviceName, mode, batteryPercent];
 
     // Low battery notification (only when not charging)
     if (batteryPercent < 20 && batteryPercent > 0 && !notificationShown_ && !isCharging) {
-        [self showLowBatteryNotification:batteryPercent];
+        [self showLowBatteryNotification:batteryPercent deviceName:deviceName];
         notificationShown_ = true;
     } else if (batteryPercent >= 20 || isCharging) {
         notificationShown_ = false;
@@ -352,9 +370,7 @@ static void onDeviceChange(void* context) {
     });
 }
 
-- (NSImage*)mouseIconWithColor:(NSColor*)color {
-    (void)color;  // Color parameter reserved for future use
-    
+- (NSImage*)mouseIcon {
     // Try SF Symbol first (macOS 11+)
     if (@available(macOS 11.0, *)) {
         NSImage* icon = [NSImage imageWithSystemSymbolName:@"computermouse.fill" 
@@ -370,17 +386,13 @@ static void onDeviceChange(void* context) {
     return nil;
 }
 
-- (void)showLowBatteryNotification:(uint8_t)batteryPercent {
+- (void)showLowBatteryNotification:(uint8_t)batteryPercent deviceName:(NSString*)name {
     UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
 
     // Request authorization (if not already granted)
     [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
                           completionHandler:^(BOOL granted, NSError* error) {
-        if (error) {
-            NSLog(@"ERROR: Failed to request notification authorization: %@", error);
-            return;
-        }
-
+        (void)error;
         if (!granted) {
             NSLog(@"WARNING: User denied notification authorization");
             return;
@@ -388,7 +400,7 @@ static void onDeviceChange(void* context) {
 
         // Create notification content
         UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
-        content.title = @"Razer Viper V2 Pro - Low Battery";
+        content.title = [NSString stringWithFormat:@"%@ - Low Battery", name];
         content.body = [NSString stringWithFormat:@"Battery level is %d%%. Please charge your mouse.", batteryPercent];
         content.sound = [UNNotificationSound defaultSound];
 
