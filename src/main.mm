@@ -62,7 +62,7 @@ static void onDeviceChange(void* context) {
     // STEP 1: Create UI FIRST
     NSStatusBar* statusBar = [NSStatusBar systemStatusBar];
     statusItem_ = [statusBar statusItemWithLength:NSVariableStatusItemLength];
-    
+
     NSImage* mouseIcon = [self mouseIconCharging:NO];
     if (mouseIcon) {
         statusItem_.button.image = mouseIcon;
@@ -72,9 +72,12 @@ static void onDeviceChange(void* context) {
         statusItem_.button.title = @"🖱️ ...";
     }
     statusItem_.button.toolTip = @"Razer Battery Monitor";
-    
+
     // Create menu
     NSMenu* menu = [[NSMenu alloc] init];
+
+    NSMenuItem* versionItem_ = [[NSMenuItem alloc] initWithTitle:@"Version: 1.3.2" action:nil keyEquivalent:@""];
+    [menu addItem:versionItem_];
 
     statusMenuItem_ = [[NSMenuItem alloc] initWithTitle:@"Starting..." action:nil keyEquivalent:@""];
     [statusMenuItem_ setEnabled:NO];
@@ -88,7 +91,7 @@ static void onDeviceChange(void* context) {
     [refreshItem setTarget:self];
     [menu addItem:refreshItem];
 
-    NSMenuItem* loginItem = [[NSMenuItem alloc] initWithTitle:@"Start at Login..."
+    NSMenuItem* loginItem = [[NSMenuItem alloc] initWithTitle:@"Open at Login"
                                                        action:@selector(openLoginSettings:)
                                                 keyEquivalent:@""];
     [loginItem setTarget:self];
@@ -102,15 +105,15 @@ static void onDeviceChange(void* context) {
     [quitItem setTarget:NSApp];
     [menu addItem:quitItem];
     statusItem_.menu = menu;
-    
+
     // STEP 2: Force UI to appear immediately
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
-    
+
     // STEP 3: Start IOKit Hotplug Monitoring via RazerDevice
     if (razerDevice_) {
         razerDevice_->startMonitoring(onDeviceChange, (__bridge void*)self);
     }
-    
+
     // STEP 4: Register for sleep/wake notifications
     [[[NSWorkspace sharedWorkspace] notificationCenter]
         addObserver:self selector:@selector(systemWillSleep:)
@@ -247,7 +250,7 @@ static void onDeviceChange(void* context) {
         }
         NSLog(@"Successfully reconnected to Razer device");
     }
-    
+
     uint8_t batteryPercent = 0;
     if (razerDevice_->queryBattery(batteryPercent)) {
         bool isCharging = false;
@@ -272,9 +275,9 @@ static void onDeviceChange(void* context) {
                 statusItem_.button.image = icon;
                 statusItem_.button.contentTintColor = nil; // Use system color for icon
             }
-            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@"⚡" attributes:@{
+            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@"⚡︎" attributes:@{
                 NSForegroundColorAttributeName: [NSColor systemGreenColor],
-                NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+                NSFontAttributeName: [NSFont systemFontOfSize:10]
             }];
             NSString* deviceName = [NSString stringWithUTF8String:razerDevice_->deviceName().c_str()];
             statusMenuItem_.title = [NSString stringWithFormat:@"%@ — Charging via USB-C", deviceName];
@@ -287,41 +290,52 @@ static void onDeviceChange(void* context) {
 - (void)updateBatteryDisplayWithLevel:(uint8_t)batteryPercent charging:(bool)isCharging {
     lastBatteryLevel_ = batteryPercent;
 
-    // Format menu bar text
-    NSString* titleText;
-    if (isCharging && batteryPercent >= 100) {
-        titleText = [NSString stringWithFormat:@"%d%% 🔌", batteryPercent];
-    } else if (isCharging) {
-        titleText = [NSString stringWithFormat:@"%d%% ⚡", batteryPercent];
-    } else {
-        titleText = [NSString stringWithFormat:@"%d%%", batteryPercent];
-    }
-
-    // Design choice: Text color based on status, Icon remains system default
+    // 1. Determine the color first
     NSColor* textColor;
     if (isCharging) {
         textColor = [NSColor systemGreenColor];
-    } else if (batteryPercent <= 20) {
-        textColor = [NSColor systemRedColor];
     } else if (batteryPercent <= 30) {
+        textColor = [NSColor systemRedColor];
+    } else if (batteryPercent <= 50) {
         textColor = [NSColor systemYellowColor];
     } else {
-        textColor = [NSColor controlTextColor]; // Standard white/black
+        textColor = [NSColor controlTextColor];
     }
 
-    // Set icon (Always template mode, no manual tinting)
+    // 2. Set the text with a newline (Number on top, % on bottom)
+    NSString* textStr;
+    if (isCharging && batteryPercent < 100) {
+        textStr = [NSString stringWithFormat:@"%d⚡︎\n%%", batteryPercent];
+    } else if (isCharging && batteryPercent >= 100) {
+        textStr = [NSString stringWithFormat:@"%d🔌\n%%", batteryPercent];
+    } else {
+        textStr = [NSString stringWithFormat:@"%d\n%%", batteryPercent];
+    }
+
+    // 3. Create a paragraph style to squish the lines together
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentCenter;
+    style.lineSpacing = -4.0;
+    style.maximumLineHeight = 8.0;
+    style.lineHeightMultiple = 0.8;
+
+    // 4. Set attributes and apply
+    NSDictionary* attrs = @{
+        NSForegroundColorAttributeName: textColor,
+        NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+        NSParagraphStyleAttributeName: style,
+        NSBaselineOffsetAttributeName: @(-3.5)
+    };
+
+    statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
+
+    // 5. Handle the Icon (with charging bolt if charging)
     NSImage* icon = [self mouseIconCharging:isCharging];
     if (icon) {
         [icon setTemplate:YES];
         statusItem_.button.image = icon;
-        statusItem_.button.contentTintColor = nil; // Clear any previous tint
+        statusItem_.button.imagePosition = NSImageLeft;
     }
-    
-    NSDictionary* attrs = @{
-        NSForegroundColorAttributeName: textColor,
-        NSFontAttributeName: [NSFont menuBarFontOfSize:0]
-    };
-    statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:titleText attributes:attrs];
 
     // Update dropdown menu status line
     NSString* mode;
@@ -332,7 +346,7 @@ static void onDeviceChange(void* context) {
     } else {
         mode = @"Wireless";
     }
-    
+
     NSString* deviceName = [NSString stringWithUTF8String:razerDevice_->deviceName().c_str()];
     if ([deviceName length] == 0 || [deviceName isEqualToString:@"Unknown Razer Mouse"]) {
         deviceName = @"Razer Mouse";
@@ -528,11 +542,11 @@ static void onDeviceChange(void* context) {
 int main(int argc, const char* argv[]) {
     (void)argc;
     (void)argv;
-    
+
     @autoreleasepool {
         NSApplication* app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
-        
+
         BatteryMonitorApp* delegate = [[BatteryMonitorApp alloc] init];
         [app setDelegate:delegate];
         [app run];
