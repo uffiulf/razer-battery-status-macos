@@ -6,6 +6,8 @@
     <string>com.razer.batterymonitor</string>
     <key>CFBundleName</key>
     <string>Razer Battery Monitor</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleVersion</key>
     <string>1.3.2</string>
     <key>CFBundleShortVersionString</key>
@@ -22,4 +24,3 @@
     <string>This application needs access to USB HID devices to monitor your Razer mouse battery level.</string>
 </dict>
 </plist>
-
