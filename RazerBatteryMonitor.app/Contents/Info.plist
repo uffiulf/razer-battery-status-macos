@@ -14,8 +14,6 @@
     <string>1.3.2</string>
     <key>LSUIElement</key>
     <true/>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
