@@ -375,7 +375,7 @@ static void onDeviceChange(void* context) {
     } else if (batteryPercent <= 40) {
         textColor = [NSColor systemYellowColor]; // 🟡 Warning
     } else {
-        textColor = [NSColor systemGreenColor];  // 🟢 Good (41-100%)
+        textColor = [NSColor controlTextColor];  // ⬜ Good (41-100%) — standard white/black
     }
 
     // Charging suffix symbol
