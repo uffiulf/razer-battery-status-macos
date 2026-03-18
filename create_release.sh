@@ -7,7 +7,7 @@ set -e  # Exit on error
 APP_NAME="RazerBatteryMonitor"
 APP_BUNDLE="${APP_NAME}.app"
 DMG_NAME="${APP_NAME}.dmg"
-VERSION="1.2.0"
+VERSION="1.3.2"
 
 echo "=========================================="
 echo "  Razer Battery Monitor - Release Build"
@@ -40,10 +40,18 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 echo "[3/5] Copying files..."
 cp "${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/"
 cp "Info.plist" "${APP_BUNDLE}/Contents/"
+cp "AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/"
 echo "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
+
+# Kopier app-ikon
+if [ -f "AppIcon.icns" ]; then
+    cp "AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/"
+    echo "App icon added."
+fi
 
 # Step 4: Sign the app
 echo "[4/5] Signing app bundle (ad-hoc)..."
+xattr -cr "${APP_BUNDLE}"
 codesign --force --deep -s - "${APP_BUNDLE}"
 
 # Step 5: Create styled DMG
@@ -79,4 +87,3 @@ echo ""
 echo "Note: The app requires Input Monitoring permission"
 echo "for USB device access."
 echo ""
-

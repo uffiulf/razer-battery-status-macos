@@ -3,7 +3,7 @@
 A native macOS menu bar application that displays battery status for supported Razer wireless mice.
 
 ![Status: Working](https://img.shields.io/badge/Status-Working-brightgreen)
-![Version: 1.2.0](https://img.shields.io/badge/Version-1.2.0-blue)
+![Version: 1.3.3](https://img.shields.io/badge/Version-1.3.3-blue)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS-blue)
 
 
@@ -39,12 +39,12 @@ The following Razer wireless mice are supported (wireless and wired/charging mod
 
 | Mouse Model | Status |
 |-------------|--------|
-| Razer Viper V2 Pro | ✅ Tested |
+| Razer Viper V2 Pro | ✅ Supported & Tested |
+| Razer DeathAdder V3 Pro | ✅ Supported & Tested |
 | Razer DeathAdder V2 Pro | ✅ Supported |
 | Razer Viper Ultimate | ✅ Supported |
 | Razer Basilisk Ultimate | ✅ Supported |
 | Razer Naga Pro | ✅ Supported |
-| Razer DeathAdder V3 Pro | ✅ Supported |
 | Razer Basilisk V3 Pro | ✅ Supported |
 | Razer Cobra Pro | ✅ Supported |
 | Razer Naga V2 Pro | ✅ Supported |
@@ -261,9 +261,41 @@ wLength:       90 bytes
 
 - **Sleep mode detection**: When the mouse enters sleep mode, the app may display 100% battery + charging icon. This is incorrect behavior and will be fixed in a future update.
 
+- **Must run as `.app` bundle**: Running the raw binary directly from Terminal (`./RazerBatteryMonitor`) will cause an `Abort trap: 6` crash. This is because `UNUserNotificationCenter` requires a valid Bundle Identifier, which is only present when the app is launched as a proper `.app` bundle. Always launch via `RazerBatteryMonitor.app` or `open -a RazerBatteryMonitor`.
+
+- **Brief UI freeze on USB connect (0.3s)**: When the mouse is plugged in via cable or wakes from sleep, the menu bar may freeze for ~0.3 seconds. This is caused by `setDeviceMode` sending a USB initialization command with a hardware delay. It only occurs during connect events, not during normal use. A full fix requires a thread-safe state machine (planned for v1.4.0).
+
+- **Notifications may not work when running as root**: If the app is started with `sudo`, `UNUserNotificationCenter` may fail to deliver low battery notifications to the logged-in user. Run the app as a regular user (not root) for reliable notifications.
+
 ---
 
 ## Recent Updates (2026)
+
+### ✨ Display Preferences & Color Customization (v1.3.3)
+
+User-configurable display styles and color modes for personalized menu bar appearance:
+
+**New Features:**
+- ✅ **Display Style** menu: Choose how battery is shown in menu bar
+  - Icon + Percent (stacked) — 87⚡︎ / % — most compact
+  - Icon + Percent — 87% horizontally
+  - Percent only — 87% without icon
+  - Icon only — Mouse icon with color tint (no text)
+- ✅ **Color Mode** menu: Select color scheme for battery status
+  - Color coded — 🔴 red ≤20%, 🟡 yellow 21-40%, ⬜ white >40%, 🟢 green charging
+  - White + green when charging — Most minimal, green only when actively charging
+  - Always white — No color indicators (system default)
+- ✅ **Smart icon tinting** — In "Icon only" mode, colors now show battery status (no text needed)
+- ✅ **NSUserDefaults persistence** — Settings saved across app restarts
+
+**Fixes:**
+- Fixed icon disappearing in Icon Only mode when charging
+- Fixed charging cable bypassing display style preferences
+- Improved macOS 12 compatibility (graceful fallback from bolt symbols)
+
+**Result:** Users can now fully customize how their battery status appears in the menu bar while maintaining the app's clean, native macOS aesthetic.
+
+---
 
 ### 🚀 Major Refactoring - Thread Safety & Reliability (v1.3.0)
 
@@ -293,6 +325,14 @@ See [REFACTORING_NOTES.md](REFACTORING_NOTES.md) for detailed technical informat
 ---
 
 ## Changelog
+
+### v1.3.3
+- **Display Style preferences**: 4 user-selectable menu bar styles (Icon+Percent stacked/horizontal, Percent only, Icon only)
+- **Color Mode preferences**: 3 user-selectable color schemes (Color coded, White+green, Always white)
+- **Icon tinting in Icon Only mode**: Colors show battery status without text
+- **Bug fixes**: Icon disappearing in Icon Only mode, charging bypassing display styles
+- **Persistence**: All preferences saved via NSUserDefaults
+- **Known issues documented**: Abort trap on raw binary, 0.3s UI freeze on USB connect, sudo notification limitation
 
 ### v1.2.0
 - **PID-based mode detection**: Instant wired/wireless detection using USB Product ID
@@ -372,7 +412,7 @@ If your mouse uses different offsets, adjust in `queryBattery()` and `queryCharg
 | Mouse | Wireless PID | Wired PID | Status |
 |-------|-------------|-----------|--------|
 | Viper V2 Pro | 0x00A6 | 0x00A5 | ✅ Tested |
-| DeathAdder V3 Pro | 0x00B6 | 0x00B5 | 🔬 Untested |
+| DeathAdder V3 Pro | 0x00B6 | 0x00B5 | ✅ Tested |
 | Basilisk V3 Pro | 0x00AA | 0x00A9 | 🔬 Untested |
 | Viper Ultimate | 0x007A | 0x007B | 🔬 Untested |
 | Naga V2 Pro | 0x00AD | ? | 🔬 Untested |
