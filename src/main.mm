@@ -4,15 +4,27 @@
 #import <UserNotifications/UserNotifications.h>
 #import "RazerDevice.hpp"
 
+// Display style options stored in NSUserDefaults
+typedef NS_ENUM(NSInteger, DisplayStyle) {
+    DisplayStyleIconAndVerticalPercent = 0,  // Mouse icon + stacked "87 / %" (default)
+    DisplayStyleIconAndPercent         = 1,  // Mouse icon + "87%"
+    DisplayStylePercentOnly            = 2,  // "87%" (no icon)
+    DisplayStyleIconOnly               = 3,  // Mouse icon only
+};
+
+static NSString* const kDisplayStyleKey = @"displayStyle";
+
 @interface BatteryMonitorApp : NSObject <NSApplicationDelegate> {
     NSStatusItem* statusItem_;
     NSMenuItem* statusMenuItem_;
     RazerDevice* razerDevice_;
     NSTimer* pollTimer_;
     uint8_t lastBatteryLevel_;
+    bool lastChargingState_;
     bool notificationShown_;
     dispatch_queue_t batteryQueue_;
     int notChargingCount_;  // Debounce: antall påfølgende "ikke lader"-svar fra firmware
+    NSMenu* displayStyleMenu_;  // Submenu for display style selection
 }
 
 - (void)updateBatteryDisplay;
@@ -26,6 +38,10 @@
 - (void)manualRefresh:(id)sender;
 - (void)schedulePollWithInterval:(NSTimeInterval)interval;
 - (NSTimeInterval)pollIntervalForBattery:(uint8_t)battery charging:(bool)charging;
+- (DisplayStyle)currentDisplayStyle;
+- (void)setDisplayStyle:(DisplayStyle)style;
+- (void)displayStyleChanged:(id)sender;
+- (NSMenu*)buildDisplayStyleMenu;
 @end
 
 // Static callback for RazerDevice monitoring (must be after @interface)
@@ -47,9 +63,15 @@ static void onDeviceChange(void* context) {
         razerDevice_ = new RazerDevice();
         pollTimer_ = nil;
         lastBatteryLevel_ = 0;
+        lastChargingState_ = false;
         notificationShown_ = false;
         batteryQueue_ = dispatch_queue_create("no.ulfsec.battery", DISPATCH_QUEUE_SERIAL);
         notChargingCount_ = 0;
+        displayStyleMenu_ = nil;
+        // Register default display style
+        [[NSUserDefaults standardUserDefaults] registerDefaults:@{
+            kDisplayStyleKey: @(DisplayStyleIconAndVerticalPercent)
+        }];
     }
     return self;
 }
@@ -90,6 +112,14 @@ static void onDeviceChange(void* context) {
                                                   keyEquivalent:@"r"];
     [refreshItem setTarget:self];
     [menu addItem:refreshItem];
+
+    // Display Style submenu
+    NSMenuItem* displayStyleItem = [[NSMenuItem alloc] initWithTitle:@"Display Style" action:nil keyEquivalent:@""];
+    displayStyleMenu_ = [self buildDisplayStyleMenu];
+    [displayStyleItem setSubmenu:displayStyleMenu_];
+    [menu addItem:displayStyleItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
 
     NSMenuItem* loginItem = [[NSMenuItem alloc] initWithTitle:@"Open at Login"
                                                        action:@selector(openLoginSettings:)
@@ -188,6 +218,60 @@ static void onDeviceChange(void* context) {
     // URL to open Login Items in System Settings (macOS 13+)
     NSURL* url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.LoginItems-Settings.extension"];
     [[NSWorkspace sharedWorkspace] openURL:url];
+}
+
+// --- Display Style Preferences ---
+
+- (DisplayStyle)currentDisplayStyle {
+    return (DisplayStyle)[[NSUserDefaults standardUserDefaults] integerForKey:kDisplayStyleKey];
+}
+
+- (void)setDisplayStyle:(DisplayStyle)style {
+    [[NSUserDefaults standardUserDefaults] setInteger:style forKey:kDisplayStyleKey];
+    // Update checkmarks in submenu
+    for (NSMenuItem* item in displayStyleMenu_.itemArray) {
+        item.state = (item.tag == style) ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    // Refresh display immediately with current cached values
+    if (lastBatteryLevel_ > 0) {
+        [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:lastChargingState_];
+    }
+}
+
+- (void)displayStyleChanged:(id)sender {
+    NSMenuItem* item = (NSMenuItem*)sender;
+    [self setDisplayStyle:(DisplayStyle)item.tag];
+}
+
+- (NSMenu*)buildDisplayStyleMenu {
+    NSMenu* submenu = [[NSMenu alloc] initWithTitle:@"Display Style"];
+    DisplayStyle current = [self currentDisplayStyle];
+
+    NSDictionary* options = @{
+        @(DisplayStyleIconAndVerticalPercent): @"Icon + Percent (stacked)",
+        @(DisplayStyleIconAndPercent):         @"Icon + Percent",
+        @(DisplayStylePercentOnly):            @"Percent only",
+        @(DisplayStyleIconOnly):               @"Icon only",
+    };
+    NSArray* order = @[
+        @(DisplayStyleIconAndVerticalPercent),
+        @(DisplayStyleIconAndPercent),
+        @(DisplayStylePercentOnly),
+        @(DisplayStyleIconOnly),
+    ];
+
+    for (NSNumber* styleNum in order) {
+        DisplayStyle style = (DisplayStyle)styleNum.integerValue;
+        NSString* title = options[styleNum];
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
+                                                      action:@selector(displayStyleChanged:)
+                                               keyEquivalent:@""];
+        item.tag = style;
+        item.target = self;
+        item.state = (style == current) ? NSControlStateValueOn : NSControlStateValueOff;
+        [submenu addItem:item];
+    }
+    return submenu;
 }
 
 - (void)connectToDevice {
@@ -289,8 +373,9 @@ static void onDeviceChange(void* context) {
 
 - (void)updateBatteryDisplayWithLevel:(uint8_t)batteryPercent charging:(bool)isCharging {
     lastBatteryLevel_ = batteryPercent;
+    lastChargingState_ = isCharging;
 
-    // 1. Determine the color first
+    // 1. Determine the color
     NSColor* textColor;
     if (isCharging) {
         textColor = [NSColor systemGreenColor];
@@ -302,39 +387,80 @@ static void onDeviceChange(void* context) {
         textColor = [NSColor controlTextColor];
     }
 
-    // 2. Set the text with a newline (Number on top, % on bottom)
-    NSString* textStr;
-    if (isCharging && batteryPercent < 100) {
-        textStr = [NSString stringWithFormat:@"%d⚡︎\n%%", batteryPercent];
-    } else if (isCharging && batteryPercent >= 100) {
-        textStr = [NSString stringWithFormat:@"%d🔌\n%%", batteryPercent];
-    } else {
-        textStr = [NSString stringWithFormat:@"%d\n%%", batteryPercent];
-    }
+    // Charging suffix symbol
+    NSString* chargeSuffix = @"";
+    if (isCharging && batteryPercent < 100) chargeSuffix = @"⚡︎";
+    else if (isCharging && batteryPercent >= 100) chargeSuffix = @"🔌";
 
-    // 3. Create a paragraph style to squish the lines together
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.alignment = NSTextAlignmentCenter;
-    style.lineSpacing = -4.0;
-    style.maximumLineHeight = 8.0;
-    style.lineHeightMultiple = 0.8;
-
-    // 4. Set attributes and apply
-    NSDictionary* attrs = @{
-        NSForegroundColorAttributeName: textColor,
-        NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
-        NSParagraphStyleAttributeName: style,
-        NSBaselineOffsetAttributeName: @(-3.5)
-    };
-
-    statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
-
-    // 5. Handle the Icon (with charging bolt if charging)
+    DisplayStyle style = [self currentDisplayStyle];
     NSImage* icon = [self mouseIconCharging:isCharging];
-    if (icon) {
-        [icon setTemplate:YES];
-        statusItem_.button.image = icon;
-        statusItem_.button.imagePosition = NSImageLeft;
+
+    // 2. Apply display style
+    switch (style) {
+
+        case DisplayStyleIconAndVerticalPercent: {
+            // Stacked: "87⚡︎" on top, "%" below — compact vertical layout
+            NSString* textStr = [NSString stringWithFormat:@"%d%@\n%%", batteryPercent, chargeSuffix];
+            NSMutableParagraphStyle* pStyle = [[NSMutableParagraphStyle alloc] init];
+            pStyle.alignment = NSTextAlignmentCenter;
+            pStyle.lineSpacing = -4.0;
+            pStyle.maximumLineHeight = 8.0;
+            pStyle.lineHeightMultiple = 0.8;
+            NSDictionary* attrs = @{
+                NSForegroundColorAttributeName: textColor,
+                NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightMedium],
+                NSParagraphStyleAttributeName: pStyle,
+                NSBaselineOffsetAttributeName: @(-3.5)
+            };
+            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
+            if (icon) {
+                statusItem_.button.image = icon;
+                statusItem_.button.imagePosition = NSImageLeft;
+            } else {
+                statusItem_.button.image = nil;
+            }
+            break;
+        }
+
+        case DisplayStyleIconAndPercent: {
+            // Horizontal: icon + "87%" side by side
+            NSString* textStr = [NSString stringWithFormat:@"%d%%%@", batteryPercent, chargeSuffix];
+            NSDictionary* attrs = @{
+                NSForegroundColorAttributeName: textColor,
+                NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+            };
+            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
+            if (icon) {
+                statusItem_.button.image = icon;
+                statusItem_.button.imagePosition = NSImageLeft;
+            } else {
+                statusItem_.button.image = nil;
+            }
+            break;
+        }
+
+        case DisplayStylePercentOnly: {
+            // Just "87%" — no icon
+            NSString* textStr = [NSString stringWithFormat:@"%d%%%@", batteryPercent, chargeSuffix];
+            NSDictionary* attrs = @{
+                NSForegroundColorAttributeName: textColor,
+                NSFontAttributeName: [NSFont menuBarFontOfSize:0]
+            };
+            statusItem_.button.image = nil;
+            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
+            break;
+        }
+
+        case DisplayStyleIconOnly: {
+            // Just the mouse icon — no text
+            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
+            statusItem_.button.title = @"";
+            if (icon) {
+                statusItem_.button.image = icon;
+                statusItem_.button.imagePosition = NSImageOnly;
+            }
+            break;
+        }
     }
 
     // Update dropdown menu status line
