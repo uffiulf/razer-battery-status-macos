@@ -261,6 +261,12 @@ wLength:       90 bytes
 
 - **Sleep mode detection**: When the mouse enters sleep mode, the app may display 100% battery + charging icon. This is incorrect behavior and will be fixed in a future update.
 
+- **Must run as `.app` bundle**: Running the raw binary directly from Terminal (`./RazerBatteryMonitor`) will cause an `Abort trap: 6` crash. This is because `UNUserNotificationCenter` requires a valid Bundle Identifier, which is only present when the app is launched as a proper `.app` bundle. Always launch via `RazerBatteryMonitor.app` or `open -a RazerBatteryMonitor`.
+
+- **Brief UI freeze on USB connect (0.3s)**: When the mouse is plugged in via cable or wakes from sleep, the menu bar may freeze for ~0.3 seconds. This is caused by `setDeviceMode` sending a USB initialization command with a hardware delay. It only occurs during connect events, not during normal use. A full fix requires a thread-safe state machine (planned for v1.4.0).
+
+- **Notifications may not work when running as root**: If the app is started with `sudo`, `UNUserNotificationCenter` may fail to deliver low battery notifications to the logged-in user. Run the app as a regular user (not root) for reliable notifications.
+
 ---
 
 ## Recent Updates (2026)
