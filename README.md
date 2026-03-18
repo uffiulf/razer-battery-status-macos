@@ -3,7 +3,7 @@
 A native macOS menu bar application that displays battery status for supported Razer wireless mice.
 
 ![Status: Working](https://img.shields.io/badge/Status-Working-brightgreen)
-![Version: 1.3.2](https://img.shields.io/badge/Version-1.3.2-blue)
+![Version: 1.3.3](https://img.shields.io/badge/Version-1.3.3-blue)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS-blue)
 
 
@@ -271,7 +271,7 @@ wLength:       90 bytes
 
 ## Recent Updates (2026)
 
-### ✨ Display Preferences & Color Customization (v1.3.2)
+### ✨ Display Preferences & Color Customization (v1.3.3)
 
 User-configurable display styles and color modes for personalized menu bar appearance:
 
@@ -326,12 +326,13 @@ See [REFACTORING_NOTES.md](REFACTORING_NOTES.md) for detailed technical informat
 
 ## Changelog
 
-### v1.3.2
+### v1.3.3
 - **Display Style preferences**: 4 user-selectable menu bar styles (Icon+Percent stacked/horizontal, Percent only, Icon only)
 - **Color Mode preferences**: 3 user-selectable color schemes (Color coded, White+green, Always white)
 - **Icon tinting in Icon Only mode**: Colors show battery status without text
 - **Bug fixes**: Icon disappearing in Icon Only mode, charging bypassing display styles
 - **Persistence**: All preferences saved via NSUserDefaults
+- **Known issues documented**: Abort trap on raw binary, 0.3s UI freeze on USB connect, sudo notification limitation
 
 ### v1.2.0
 - **PID-based mode detection**: Instant wired/wireless detection using USB Product ID

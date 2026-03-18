@@ -114,7 +114,7 @@ static void onDeviceChange(void* context) {
     // Create menu
     NSMenu* menu = [[NSMenu alloc] init];
 
-    NSMenuItem* versionItem_ = [[NSMenuItem alloc] initWithTitle:@"Version: 1.3.2" action:nil keyEquivalent:@""];
+    NSMenuItem* versionItem_ = [[NSMenuItem alloc] initWithTitle:@"Version: 1.3.3" action:nil keyEquivalent:@""];
     [menu addItem:versionItem_];
 
     statusMenuItem_ = [[NSMenuItem alloc] initWithTitle:@"Starting..." action:nil keyEquivalent:@""];
