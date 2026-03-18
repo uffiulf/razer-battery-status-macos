@@ -366,15 +366,16 @@ static void onDeviceChange(void* context) {
     lastChargingState_ = isCharging;
 
     // 1. Determine the color
+    // Charging: always green. Not charging: red ≤20%, yellow 21-40%, green 41-100%
     NSColor* textColor;
     if (isCharging) {
         textColor = [NSColor systemGreenColor];
-    } else if (batteryPercent <= 30) {
-        textColor = [NSColor systemRedColor];
-    } else if (batteryPercent <= 50) {
-        textColor = [NSColor systemYellowColor];
+    } else if (batteryPercent <= 20) {
+        textColor = [NSColor systemRedColor];    // 🔴 Critical
+    } else if (batteryPercent <= 40) {
+        textColor = [NSColor systemYellowColor]; // 🟡 Warning
     } else {
-        textColor = [NSColor controlTextColor];
+        textColor = [NSColor systemGreenColor];  // 🟢 Good (41-100%)
     }
 
     // Charging suffix symbol
