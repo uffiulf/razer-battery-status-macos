@@ -12,7 +12,15 @@ typedef NS_ENUM(NSInteger, DisplayStyle) {
     DisplayStyleIconOnly               = 3,  // Mouse icon only
 };
 
+// Color mode options stored in NSUserDefaults
+typedef NS_ENUM(NSInteger, ColorMode) {
+    ColorModeColored  = 0,  // 🔴 red ≤20%, 🟡 yellow 21-40%, ⬜ white >40%, 🟢 green charging (default)
+    ColorModeWhite    = 1,  // Always white/system default, green only when charging
+    ColorModeMinimal  = 2,  // Always white/system default, no special charging color
+};
+
 static NSString* const kDisplayStyleKey = @"displayStyle";
+static NSString* const kColorModeKey    = @"colorMode";
 
 @interface BatteryMonitorApp : NSObject <NSApplicationDelegate> {
     NSStatusItem* statusItem_;
@@ -25,6 +33,7 @@ static NSString* const kDisplayStyleKey = @"displayStyle";
     dispatch_queue_t batteryQueue_;
     int notChargingCount_;  // Debounce: antall påfølgende "ikke lader"-svar fra firmware
     NSMenu* displayStyleMenu_;  // Submenu for display style selection
+    NSMenu* colorModeMenu_;     // Submenu for color mode selection
 }
 
 - (void)updateBatteryDisplay;
@@ -42,6 +51,11 @@ static NSString* const kDisplayStyleKey = @"displayStyle";
 - (void)setDisplayStyle:(DisplayStyle)style;
 - (void)displayStyleChanged:(id)sender;
 - (NSMenu*)buildDisplayStyleMenu;
+- (ColorMode)currentColorMode;
+- (void)setColorMode:(ColorMode)mode;
+- (void)colorModeChanged:(id)sender;
+- (NSMenu*)buildColorModeMenu;
+- (NSColor*)textColorForBattery:(uint8_t)batteryPercent charging:(bool)isCharging;
 @end
 
 // Static callback for RazerDevice monitoring (must be after @interface)
@@ -68,9 +82,11 @@ static void onDeviceChange(void* context) {
         batteryQueue_ = dispatch_queue_create("no.ulfsec.battery", DISPATCH_QUEUE_SERIAL);
         notChargingCount_ = 0;
         displayStyleMenu_ = nil;
-        // Register default display style
+        colorModeMenu_ = nil;
+        // Register default preferences
         [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-            kDisplayStyleKey: @(DisplayStyleIconAndVerticalPercent)
+            kDisplayStyleKey: @(DisplayStyleIconAndVerticalPercent),
+            kColorModeKey:    @(ColorModeColored)
         }];
     }
     return self;
@@ -118,6 +134,12 @@ static void onDeviceChange(void* context) {
     displayStyleMenu_ = [self buildDisplayStyleMenu];
     [displayStyleItem setSubmenu:displayStyleMenu_];
     [menu addItem:displayStyleItem];
+
+    // Color Mode submenu
+    NSMenuItem* colorModeItem = [[NSMenuItem alloc] initWithTitle:@"Color Mode" action:nil keyEquivalent:@""];
+    colorModeMenu_ = [self buildColorModeMenu];
+    [colorModeItem setSubmenu:colorModeMenu_];
+    [menu addItem:colorModeItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -274,6 +296,67 @@ static void onDeviceChange(void* context) {
     return submenu;
 }
 
+// --- Color Mode Preferences ---
+
+- (ColorMode)currentColorMode {
+    return (ColorMode)[[NSUserDefaults standardUserDefaults] integerForKey:kColorModeKey];
+}
+
+- (void)setColorMode:(ColorMode)mode {
+    [[NSUserDefaults standardUserDefaults] setInteger:mode forKey:kColorModeKey];
+    for (NSMenuItem* item in colorModeMenu_.itemArray) {
+        item.state = (item.tag == mode) ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if (lastBatteryLevel_ > 0) {
+        [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:lastChargingState_];
+    }
+}
+
+- (void)colorModeChanged:(id)sender {
+    NSMenuItem* item = (NSMenuItem*)sender;
+    [self setColorMode:(ColorMode)item.tag];
+}
+
+- (NSMenu*)buildColorModeMenu {
+    NSMenu* submenu = [[NSMenu alloc] initWithTitle:@"Color Mode"];
+    ColorMode current = [self currentColorMode];
+
+    NSArray* titles = @[
+        @"Color coded  (🔴 ≤20%  🟡 21-40%  ⬜ >40%)",
+        @"White + green when charging",
+        @"Always white",
+    ];
+
+    for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:titles[i]
+                                                      action:@selector(colorModeChanged:)
+                                               keyEquivalent:@""];
+        item.tag = i;
+        item.target = self;
+        item.state = (i == current) ? NSControlStateValueOn : NSControlStateValueOff;
+        [submenu addItem:item];
+    }
+    return submenu;
+}
+
+- (NSColor*)textColorForBattery:(uint8_t)batteryPercent charging:(bool)isCharging {
+    switch ([self currentColorMode]) {
+        case ColorModeColored:
+            if (isCharging)          return [NSColor systemGreenColor];
+            if (batteryPercent <= 20) return [NSColor systemRedColor];
+            if (batteryPercent <= 40) return [NSColor systemYellowColor];
+            return [NSColor controlTextColor];
+
+        case ColorModeWhite:
+            if (isCharging) return [NSColor systemGreenColor];
+            return [NSColor controlTextColor];
+
+        case ColorModeMinimal:
+            return [NSColor controlTextColor];
+    }
+    return [NSColor controlTextColor];
+}
+
 - (void)connectToDevice {
     // Try to connect
     if (!razerDevice_->connect()) {
@@ -365,18 +448,8 @@ static void onDeviceChange(void* context) {
     lastBatteryLevel_ = batteryPercent;
     lastChargingState_ = isCharging;
 
-    // 1. Determine the color
-    // Charging: always green. Not charging: red ≤20%, yellow 21-40%, green 41-100%
-    NSColor* textColor;
-    if (isCharging) {
-        textColor = [NSColor systemGreenColor];
-    } else if (batteryPercent <= 20) {
-        textColor = [NSColor systemRedColor];    // 🔴 Critical
-    } else if (batteryPercent <= 40) {
-        textColor = [NSColor systemYellowColor]; // 🟡 Warning
-    } else {
-        textColor = [NSColor controlTextColor];  // ⬜ Good (41-100%) — standard white/black
-    }
+    // 1. Determine the color based on user's chosen color mode
+    NSColor* textColor = [self textColorForBattery:batteryPercent charging:isCharging];
 
     // Charging suffix symbol
     NSString* chargeSuffix = @"";
