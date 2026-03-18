@@ -352,19 +352,9 @@ static void onDeviceChange(void* context) {
             NSLog(@"WARNING: Using cached battery level: %d%%", lastBatteryLevel_);
             [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:isCharging];
         } else if (isCharging) {
-            // New logic: Show ONLY the lightning bolt icon in green when battery is unknown
-            NSImage* icon = [self mouseIconCharging:YES];
-            if (icon) {
-                [icon setTemplate:YES]; // Ensure template mode for tinting
-                statusItem_.button.image = icon;
-                statusItem_.button.contentTintColor = nil; // Use system color for icon
-            }
-            statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@"⚡︎" attributes:@{
-                NSForegroundColorAttributeName: [NSColor systemGreenColor],
-                NSFontAttributeName: [NSFont systemFontOfSize:10]
-            }];
-            NSString* deviceName = [NSString stringWithUTF8String:razerDevice_->deviceName().c_str()];
-            statusMenuItem_.title = [NSString stringWithFormat:@"%@ — Charging via USB-C", deviceName];
+            // Battery unknown but cable detected — route through display style so Icon Only etc. works
+            NSLog(@"WARNING: Battery unknown, cable detected — showing charging state");
+            [self updateBatteryDisplayWithLevel:0 charging:true];
         } else {
             [self setDisconnectedState:@"Battery query failed"];
         }
@@ -455,9 +445,18 @@ static void onDeviceChange(void* context) {
             // Just the mouse icon — no text
             statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
             statusItem_.button.title = @"";
-            if (icon) {
-                statusItem_.button.image = icon;
+            // Use charging icon, fall back to plain icon, then show % if both nil
+            NSImage* displayIcon = icon ?: [self mouseIconCharging:NO];
+            if (displayIcon) {
+                statusItem_.button.image = displayIcon;
                 statusItem_.button.imagePosition = NSImageOnly;
+            } else {
+                // Last resort: show plain text percentage
+                NSDictionary* attrs = @{ NSForegroundColorAttributeName: textColor,
+                                         NSFontAttributeName: [NSFont menuBarFontOfSize:0] };
+                NSString* fallbackStr = [NSString stringWithFormat:@"%d%%%@", batteryPercent, chargeSuffix];
+                statusItem_.button.image = nil;
+                statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:fallbackStr attributes:attrs];
             }
             break;
         }
@@ -578,9 +577,15 @@ static void onDeviceChange(void* context) {
 - (NSImage*)mouseIconCharging:(BOOL)charging {
     // Try SF Symbol first (macOS 11+)
     if (@available(macOS 11.0, *)) {
+        // computermouse.and.bolt.fill requires macOS 13+, fall back gracefully
         NSString* symbolName = charging ? @"computermouse.and.bolt.fill" : @"computermouse.fill";
         NSImage* icon = [NSImage imageWithSystemSymbolName:symbolName
                                accessibilityDescription:charging ? @"Mouse charging" : @"Mouse"];
+        if (!icon && charging) {
+            // Bolt symbol unavailable (macOS < 13) — use plain mouse icon instead
+            icon = [NSImage imageWithSystemSymbolName:@"computermouse.fill"
+                           accessibilityDescription:@"Mouse"];
+        }
         if (icon) {
             [icon setTemplate:YES];
             return icon;
