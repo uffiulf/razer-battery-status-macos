@@ -39,12 +39,12 @@ The following Razer wireless mice are supported (wireless and wired/charging mod
 
 | Mouse Model | Status |
 |-------------|--------|
-| Razer Viper V2 Pro | ✅ Tested |
+| Razer Viper V2 Pro | ✅ Supported & Tested |
+| Razer DeathAdder V3 Pro | ✅ Supported & Tested |
 | Razer DeathAdder V2 Pro | ✅ Supported |
 | Razer Viper Ultimate | ✅ Supported |
 | Razer Basilisk Ultimate | ✅ Supported |
 | Razer Naga Pro | ✅ Supported |
-| Razer DeathAdder V3 Pro | ✅ Supported |
 | Razer Basilisk V3 Pro | ✅ Supported |
 | Razer Cobra Pro | ✅ Supported |
 | Razer Naga V2 Pro | ✅ Supported |
@@ -372,7 +372,7 @@ If your mouse uses different offsets, adjust in `queryBattery()` and `queryCharg
 | Mouse | Wireless PID | Wired PID | Status |
 |-------|-------------|-----------|--------|
 | Viper V2 Pro | 0x00A6 | 0x00A5 | ✅ Tested |
-| DeathAdder V3 Pro | 0x00B6 | 0x00B5 | 🔬 Untested |
+| DeathAdder V3 Pro | 0x00B6 | 0x00B5 | ✅ Tested |
 | Basilisk V3 Pro | 0x00AA | 0x00A9 | 🔬 Untested |
 | Viper Ultimate | 0x007A | 0x007B | 🔬 Untested |
 | Naga V2 Pro | 0x00AD | ? | 🔬 Untested |
