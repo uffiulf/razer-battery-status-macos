@@ -402,6 +402,7 @@ static void onDeviceChange(void* context) {
                 NSParagraphStyleAttributeName: pStyle,
                 NSBaselineOffsetAttributeName: @(-3.5)
             };
+            statusItem_.button.contentTintColor = nil;
             statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
             if (icon) {
                 statusItem_.button.image = icon;
@@ -419,6 +420,7 @@ static void onDeviceChange(void* context) {
                 NSForegroundColorAttributeName: textColor,
                 NSFontAttributeName: [NSFont menuBarFontOfSize:0]
             };
+            statusItem_.button.contentTintColor = nil;
             statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
             if (icon) {
                 statusItem_.button.image = icon;
@@ -436,6 +438,7 @@ static void onDeviceChange(void* context) {
                 NSForegroundColorAttributeName: textColor,
                 NSFontAttributeName: [NSFont menuBarFontOfSize:0]
             };
+            statusItem_.button.contentTintColor = nil;
             statusItem_.button.image = nil;
             statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:textStr attributes:attrs];
             break;
@@ -443,19 +446,22 @@ static void onDeviceChange(void* context) {
 
         case DisplayStyleIconOnly: {
             // Just the mouse icon — no text
+            // Use color tint to indicate charging/battery level since there's no text
             statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
             statusItem_.button.title = @"";
-            // Use charging icon, fall back to plain icon, then show % if both nil
             NSImage* displayIcon = icon ?: [self mouseIconCharging:NO];
             if (displayIcon) {
                 statusItem_.button.image = displayIcon;
                 statusItem_.button.imagePosition = NSImageOnly;
+                // Tint the icon to show status: green=charging, red=low, yellow=medium, nil=normal
+                statusItem_.button.contentTintColor = textColor == [NSColor controlTextColor] ? nil : textColor;
             } else {
                 // Last resort: show plain text percentage
                 NSDictionary* attrs = @{ NSForegroundColorAttributeName: textColor,
                                          NSFontAttributeName: [NSFont menuBarFontOfSize:0] };
                 NSString* fallbackStr = [NSString stringWithFormat:@"%d%%%@", batteryPercent, chargeSuffix];
                 statusItem_.button.image = nil;
+                statusItem_.button.contentTintColor = nil;
                 statusItem_.button.attributedTitle = [[NSAttributedString alloc] initWithString:fallbackStr attributes:attrs];
             }
             break;
