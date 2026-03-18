@@ -70,6 +70,7 @@ RazerDevice::RazerDevice()
     : usbInterface_(nullptr),
       interfaceService_(0),
       isShuttingDown_(false),
+      needsPrivileges_(false),
       isDongle_(true),  // Assume wireless by default
       connectedWiredPid_(0),
       deviceName_("Unknown Razer Mouse"),
@@ -312,6 +313,11 @@ bool RazerDevice::findInterface2(io_service_t device) {
                         usbInterface_ = interface;
                         interfaceService_ = usbInterfaceRef;
                         found = true;
+                    } else if (kr == kIOReturnNotPrivileged) {
+                        std::cerr << "ERROR: Not privileged - run with sudo or as administrator" << std::endl;
+                        needsPrivileges_ = true;
+                        (*interface)->Release(interface);
+                        IOObjectRelease(usbInterfaceRef);
                     } else {
                         (*interface)->Release(interface);
                         IOObjectRelease(usbInterfaceRef);
@@ -762,10 +768,10 @@ bool RazerDevice::queryChargingStatus(bool& isCharging) {
 
         uint8_t status = response[0];
 
-        // Status 0x00 or 0x02 = Valid response
-        // Charging status is in Byte 11 (index 11) per debug analysis
+// Status 0x00 or 0x02 = Valid response
+        // Charging status is in Byte 9 (arguments[1]) - verified via debug
         if (status == 0x00 || status == 0x02) {
-            isCharging = (response[11] == 0x01);
+            isCharging = (response[9] == 0x01);
             usbTimer_.onSuccess();
             return true;
         }

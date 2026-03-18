@@ -12,6 +12,7 @@
     uint8_t lastBatteryLevel_;
     bool notificationShown_;
     dispatch_queue_t batteryQueue_;
+    int notChargingCount_;  // Debounce: antall påfølgende "ikke lader"-svar fra firmware
 }
 
 - (void)updateBatteryDisplay;
@@ -20,9 +21,11 @@
 - (void)pollBattery:(NSTimer*)timer;
 - (void)connectToDevice;
 - (void)handleUSBEvent;
-- (NSImage*)mouseIcon;
+- (NSImage*)mouseIconCharging:(BOOL)charging;
 - (void)showLowBatteryNotification:(uint8_t)batteryPercent deviceName:(NSString*)name;
 - (void)manualRefresh:(id)sender;
+- (void)schedulePollWithInterval:(NSTimeInterval)interval;
+- (NSTimeInterval)pollIntervalForBattery:(uint8_t)battery charging:(bool)charging;
 @end
 
 // Static callback for RazerDevice monitoring (must be after @interface)
@@ -46,16 +49,21 @@ static void onDeviceChange(void* context) {
         lastBatteryLevel_ = 0;
         notificationShown_ = false;
         batteryQueue_ = dispatch_queue_create("no.ulfsec.battery", DISPATCH_QUEUE_SERIAL);
+        notChargingCount_ = 0;
     }
     return self;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
+    // LOGGFIL: /tmp/RazerBatteryMonitor.log (fungerer også med sudo)
+    freopen("/tmp/RazerBatteryMonitor.log", "a", stderr);  // NSLog skrives til stderr → loggfil
+    NSLog(@"========== RazerBatteryMonitor startet ==========");
+
     // STEP 1: Create UI FIRST
     NSStatusBar* statusBar = [NSStatusBar systemStatusBar];
     statusItem_ = [statusBar statusItemWithLength:NSVariableStatusItemLength];
     
-    NSImage* mouseIcon = [self mouseIcon];
+    NSImage* mouseIcon = [self mouseIconCharging:NO];
     if (mouseIcon) {
         statusItem_.button.image = mouseIcon;
         statusItem_.button.title = @"...";
@@ -117,7 +125,7 @@ static void onDeviceChange(void* context) {
 
 - (void)setDisconnectedState:(NSString*)statusText {
     // Show only icon (no text) in menu bar to save space
-    NSImage* icon = [self mouseIcon];
+    NSImage* icon = [self mouseIconCharging:NO];
     if (icon) {
         statusItem_.button.image = icon;
     }
@@ -154,6 +162,24 @@ static void onDeviceChange(void* context) {
     [self handleUSBEvent];
 }
 
+- (NSTimeInterval)pollIntervalForBattery:(uint8_t)battery charging:(bool)charging {
+    if (charging)           return 3.0;   // Lader → sjekk ofte (se når fulladet)
+    if (battery <= 20 && battery > 0) return 10.0;  // Lav batteri
+    return 10.0;                          // Normal
+}
+
+- (void)schedulePollWithInterval:(NSTimeInterval)interval {
+    if (pollTimer_) {
+        [pollTimer_ invalidate];
+        pollTimer_ = nil;
+    }
+    pollTimer_ = [NSTimer scheduledTimerWithTimeInterval:interval
+                                                   target:self
+                                                 selector:@selector(pollBattery:)
+                                                 userInfo:nil
+                                                  repeats:NO];
+}
+
 - (void)openLoginSettings:(id)sender {
     (void)sender;
     // URL to open Login Items in System Settings (macOS 13+)
@@ -164,7 +190,22 @@ static void onDeviceChange(void* context) {
 - (void)connectToDevice {
     // Try to connect
     if (!razerDevice_->connect()) {
-        [self setDisconnectedState:@"No Razer mouse found"];
+        // Sjekk om feilen skyldes manglende rettigheter
+        if (razerDevice_->needsPrivileges()) {
+            [self setDisconnectedState:@"⚠️ Trenger admin"];
+            NSAlert* alert = [[NSAlert alloc] init];
+            alert.messageText = @"Administrator-tilgang kreves";
+            alert.informativeText =
+                @"Razer Battery Monitor trenger administrator-rettigheter for å lese USB-enheter.\n\n"
+                @"Kjør appen slik fra Terminal:\n"
+                @"sudo open -a \"RazerBatteryMonitor\"\n\n"
+                @"Eller installer som en systemtjeneste (LaunchDaemon) for automatisk oppstart.";
+            alert.alertStyle = NSAlertStyleWarning;
+            [alert addButtonWithTitle:@"OK"];
+            [alert runModal];
+            return;  // Ikke prøv igjen – krever brukerhandling
+        }
+        [self setDisconnectedState:@"Ingen Razer mus funnet"];
         NSLog(@"Failed to connect to Razer device");
 
         // Retry in 10 seconds if initial connection fails
@@ -175,21 +216,16 @@ static void onDeviceChange(void* context) {
     // Initial battery query
     [self updateBatteryDisplay];
 
-    // Set up polling timer (30 seconds)
-    // We still keep this as a fallback for battery % changes over time
+    // Start smart polling (one-shot timer som reschedulerer seg selv)
     if (!pollTimer_) {
-        pollTimer_ = [NSTimer scheduledTimerWithTimeInterval:10.0
-                                                       target:self
-                                                     selector:@selector(pollBattery:)
-                                                     userInfo:nil
-                                                      repeats:YES];
+        [self schedulePollWithInterval:5.0];  // Første poll raskt
     }
 }
 
 - (void)updateBatteryDisplay {
     if (razerDevice_ == nil) {
         NSLog(@"ERROR: razerDevice_ is nil");
-        NSImage* icon = [self mouseIcon];
+        NSImage* icon = [self mouseIconCharging:NO];
         if (icon) {
             statusItem_.button.image = icon;
             statusItem_.button.title = @"...";
@@ -230,7 +266,7 @@ static void onDeviceChange(void* context) {
             [self updateBatteryDisplayWithLevel:lastBatteryLevel_ charging:isCharging];
         } else if (isCharging) {
             // New logic: Show ONLY the lightning bolt icon in green when battery is unknown
-            NSImage* icon = [self mouseIcon]; // Color ignored here
+            NSImage* icon = [self mouseIconCharging:YES];
             if (icon) {
                 [icon setTemplate:YES]; // Ensure template mode for tinting
                 statusItem_.button.image = icon;
@@ -274,7 +310,7 @@ static void onDeviceChange(void* context) {
     }
 
     // Set icon (Always template mode, no manual tinting)
-    NSImage* icon = [self mouseIcon];
+    NSImage* icon = [self mouseIconCharging:isCharging];
     if (icon) {
         [icon setTemplate:YES];
         statusItem_.button.image = icon;
@@ -314,6 +350,8 @@ static void onDeviceChange(void* context) {
 
 - (void)pollBattery:(NSTimer*)timer {
     (void)timer;
+    pollTimer_ = nil;  // One-shot timer har fyrt, nullstill referansen
+
     // Run battery query on background thread to avoid UI freezing
     dispatch_async(batteryQueue_, ^{
         if (!razerDevice_) return;
@@ -330,7 +368,6 @@ static void onDeviceChange(void* context) {
                 bool isCharging = false;
                 if (success) {
                     razerDevice_->queryChargingStatus(isCharging);
-                    // Fallback: if wired PID is present in IOKit, mouse is charging via cable
                     if (!isCharging && razerDevice_->isWiredDevicePresent()) {
                         isCharging = true;
                     }
@@ -342,10 +379,14 @@ static void onDeviceChange(void* context) {
                     } else {
                         [self updateBatteryDisplay];
                     }
+                    // Rescheduler med smart intervall etter reconnect
+                    NSTimeInterval next = [self pollIntervalForBattery:(success ? batteryPercent : lastBatteryLevel_) charging:isCharging];
+                    [self schedulePollWithInterval:next];
                 });
             } else {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self setDisconnectedState:@"Disconnected"];
+                    [self schedulePollWithInterval:10.0];  // Prøv igjen om 10 sek
                 });
             }
             return;
@@ -354,37 +395,58 @@ static void onDeviceChange(void* context) {
         uint8_t batteryPercent = 0;
         bool success = razerDevice_->queryBattery(batteryPercent);
         bool isCharging = false;
-        if (success) {
-            razerDevice_->queryChargingStatus(isCharging);
-        }
-        // Always check cable presence (works even when battery query fails)
+
+        // BUG FIX: Alltid spør om ladestatus, uavhengig av om battery-query lyktes
+        // Uten dette: hvis battery-query feiler → isCharging=false → ladeikon forsvinner
+        razerDevice_->queryChargingStatus(isCharging);
+
+        // Fallback: kabel til Mac (PID 0xA5 synlig i IOKit)
         if (!isCharging && razerDevice_->isWiredDevicePresent()) {
             isCharging = true;
         }
 
-        // Update UI on main thread
-        uint8_t displayLevel = success ? batteryPercent : lastBatteryLevel_;
-        bool hasLevel = success || (lastBatteryLevel_ > 0);
+        // DEBOUNCE: Razer firmware rapporterer sporadisk charging=0 midt i lading.
+        // Krev 3 påfølgende "ikke lader"-svar før vi faktisk bytter ikon.
+        if (isCharging) {
+            notChargingCount_ = 0;
+        } else {
+            notChargingCount_++;
+            if (notChargingCount_ < 3) {
+                isCharging = true;  // Hold ladeikon inntil vi er sikre
+            }
+        }
+
+        // Bruk cachet verdi hvis battery-query feilet
+        uint8_t displayLevel = (success && batteryPercent > 0) ? batteryPercent : lastBatteryLevel_;
+        bool hasLevel = (success && batteryPercent > 0) || (lastBatteryLevel_ > 0);
+
+        NSLog(@"[POLL] battery=%d%% (success=%d cached=%d%%) charging=%d notChargingCount=%d interval=%.0fs",
+              batteryPercent, success, lastBatteryLevel_, isCharging, notChargingCount_,
+              [self pollIntervalForBattery:displayLevel charging:isCharging]);
+
         dispatch_async(dispatch_get_main_queue(), ^{
             if (hasLevel) {
                 [self updateBatteryDisplayWithLevel:displayLevel charging:isCharging];
             }
+            // Rescheduler med smart intervall basert på nåværende tilstand
+            NSTimeInterval next = [self pollIntervalForBattery:displayLevel charging:isCharging];
+            [self schedulePollWithInterval:next];
         });
     });
 }
 
-- (NSImage*)mouseIcon {
+- (NSImage*)mouseIconCharging:(BOOL)charging {
     // Try SF Symbol first (macOS 11+)
     if (@available(macOS 11.0, *)) {
-        NSImage* icon = [NSImage imageWithSystemSymbolName:@"computermouse.fill" 
-                               accessibilityDescription:@"Mouse"];
+        NSString* symbolName = charging ? @"computermouse.and.bolt.fill" : @"computermouse.fill";
+        NSImage* icon = [NSImage imageWithSystemSymbolName:symbolName
+                               accessibilityDescription:charging ? @"Mouse charging" : @"Mouse"];
         if (icon) {
-            // Return as template so it adapts to menu bar appearance
             [icon setTemplate:YES];
             return icon;
         }
     }
-    
+
     // Fallback: return nil (text-only display will be used)
     return nil;
 }

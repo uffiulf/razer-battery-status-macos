@@ -63,6 +63,7 @@ public:
     bool isConnected() const;
     bool isDongle() const;
     bool isWiredDevicePresent() const;
+    bool needsPrivileges() const { return needsPrivileges_; }
     const std::string& deviceName() const;
 
     // Hotplug monitoring
@@ -93,6 +94,9 @@ private:
 
     // Adaptive timing
     USBTimer usbTimer_;                    // Adaptive USB operation timing
+
+    // Privileges detection
+    bool needsPrivileges_;  // true = USBInterfaceOpen returned kIOReturnNotPrivileged
 
     // Wired vs. Wireless detection
     bool isDongle_;  // true = Wireless (Dongle), false = Wired (Direct USB)

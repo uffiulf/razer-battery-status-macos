@@ -42,6 +42,12 @@ cp "${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/"
 cp "Info.plist" "${APP_BUNDLE}/Contents/"
 echo "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
+# Kopier app-ikon
+if [ -f "AppIcon.icns" ]; then
+    cp "AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/"
+    echo "App icon added."
+fi
+
 # Step 4: Sign the app
 echo "[4/5] Signing app bundle (ad-hoc)..."
 codesign --force --deep -s - "${APP_BUNDLE}"
