@@ -3,6 +3,7 @@
 #import <IOKit/usb/IOUSBLib.h>
 #import <UserNotifications/UserNotifications.h>
 #import "RazerDevice.hpp"
+#import "ScrollInterceptor.hpp"
 
 // Display style options stored in NSUserDefaults
 typedef NS_ENUM(NSInteger, DisplayStyle) {
@@ -22,6 +23,16 @@ typedef NS_ENUM(NSInteger, ColorMode) {
 static NSString* const kDisplayStyleKey = @"displayStyle";
 static NSString* const kColorModeKey    = @"colorMode";
 
+static NSString* const kScrollMasterKey   = @"scrollMasterEnabled";
+static NSString* const kScrollReverseKey  = @"scrollReverseEnabled";
+static NSString* const kScrollSpeedKey    = @"scrollSpeedEnabled";
+static NSString* const kScrollSpeedFactor = @"scrollSpeedFactor";
+static NSString* const kScrollAccelKey    = @"scrollAccelEnabled";
+static NSString* const kScrollAccelCurve  = @"scrollAccelCurve";
+static NSString* const kScrollSmoothKey   = @"scrollSmoothEnabled";
+static NSString* const kScrollDecayFactor = @"scrollDecayFactor";
+static NSString* const kScrollBackKey     = @"scrollBackEnabled";
+
 @interface BatteryMonitorApp : NSObject <NSApplicationDelegate> {
     NSStatusItem* statusItem_;
     NSMenuItem* statusMenuItem_;
@@ -34,11 +45,15 @@ static NSString* const kColorModeKey    = @"colorMode";
     int notChargingCount_;  // Debounce: antall påfølgende "ikke lader"-svar fra firmware
     NSMenu* displayStyleMenu_;  // Submenu for display style selection
     NSMenu* colorModeMenu_;     // Submenu for color mode selection
+    ScrollInterceptor* scrollInterceptor_;
+    NSMenu* scrollSettingsMenu_;
+    NSTimer* accessibilityPollTimer_;
 }
 
 - (void)updateBatteryDisplay;
 - (void)updateBatteryDisplayWithLevel:(uint8_t)batteryPercent charging:(bool)isCharging;
 - (void)setDisconnectedState:(NSString*)statusText;
+- (void)menuWillOpen:(NSMenu*)menu;
 - (void)pollBattery:(NSTimer*)timer;
 - (void)connectToDevice;
 - (void)handleUSBEvent;
@@ -55,6 +70,16 @@ static NSString* const kColorModeKey    = @"colorMode";
 - (void)setColorMode:(ColorMode)mode;
 - (void)colorModeChanged:(id)sender;
 - (NSMenu*)buildColorModeMenu;
+- (NSMenu*)buildScrollSettingsMenu;
+- (void)pushScrollPrefsToInterceptor;
+- (void)updateScrollPermissionUI;
+- (void)updateStatusBarTooltip;
+- (void)openAccessibilitySetup:(id)sender;
+- (void)scrollFeatureToggled:(id)sender;
+- (void)scrollSpeedSliderChanged:(id)sender;
+- (void)scrollAccelSliderChanged:(id)sender;
+- (void)scrollDecaySliderChanged:(id)sender;
+- (void)checkAccessibilityPermission:(NSTimer*)timer;
 - (NSColor*)textColorForBattery:(uint8_t)batteryPercent charging:(bool)isCharging;
 @end
 
@@ -67,7 +92,9 @@ static void onDeviceChange(void* context) {
     });
 }
 
-@implementation BatteryMonitorApp
+@implementation BatteryMonitorApp {
+    NSEvent* statusBarClickMonitor_;
+}
 
 - (instancetype)init {
     self = [super init];
@@ -85,8 +112,14 @@ static void onDeviceChange(void* context) {
         colorModeMenu_ = nil;
         // Register default preferences
         [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-            kDisplayStyleKey: @(DisplayStyleIconAndVerticalPercent),
-            kColorModeKey:    @(ColorModeColored)
+            kDisplayStyleKey:  @(DisplayStyleIconAndVerticalPercent),
+            kColorModeKey:     @(ColorModeColored),
+            kScrollMasterKey:   @NO,
+            kScrollReverseKey:  @NO,
+            kScrollSpeedKey:    @NO,   kScrollSpeedFactor: @2.0,
+            kScrollAccelKey:    @NO,   kScrollAccelCurve:  @1.5,
+            kScrollSmoothKey:   @NO,   kScrollDecayFactor: @0.85,
+            kScrollBackKey:     @NO,
         }];
     }
     return self;
@@ -94,72 +127,131 @@ static void onDeviceChange(void* context) {
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
     // LOGGFIL: /tmp/RazerBatteryMonitor.log (fungerer også med sudo)
-    freopen("/tmp/RazerBatteryMonitor.log", "a", stderr);  // NSLog skrives til stderr → loggfil
+    // freopen("/tmp/RazerBatteryMonitor.log", "a", stderr);  // NSLog skrives til stderr → loggfil
     NSLog(@"========== RazerBatteryMonitor startet ==========");
 
     // STEP 1: Create UI FIRST
     NSStatusBar* statusBar = [NSStatusBar systemStatusBar];
     statusItem_ = [statusBar statusItemWithLength:NSVariableStatusItemLength];
-
+    
+    NSLog(@"Status item created: %@", statusItem_);
+    NSLog(@"Status item button: %@", statusItem_.button);
+    
+    // Set up button with click target for menu
+    NSStatusBarButton* button = statusItem_.button;
+    button.target = self;
+    button.action = @selector(statusItemClicked:);
+    
     NSImage* mouseIcon = [self mouseIconCharging:NO];
     if (mouseIcon) {
-        statusItem_.button.image = mouseIcon;
-        statusItem_.button.title = @"...";
-        statusItem_.button.imagePosition = NSImageLeft;
+        button.image = mouseIcon;
+        button.title = @"...";
+        button.imagePosition = NSImageLeft;
     } else {
-        statusItem_.button.title = @"🖱️ ...";
+        button.title = @"🖱️ ...";
     }
-    statusItem_.button.toolTip = @"Razer Battery Monitor";
+    // Update tooltip to show scroll status
+    [self updateStatusBarTooltip];
+    NSLog(@"Button configured - image: %@", button.image);
+    NSLog(@"Button title: '%@'", button.title);
+    NSLog(@"Button imagePosition: %ld", (long)button.imagePosition);
 
     // Create menu
     NSMenu* menu = [[NSMenu alloc] init];
-
-    NSMenuItem* versionItem_ = [[NSMenuItem alloc] initWithTitle:@"Version: 1.3.3" action:nil keyEquivalent:@""];
+    NSLog(@"Menu created");
+    
+    NSMenuItem* versionItem_ = [[NSMenuItem alloc] initWithTitle:@"Version: 1.3.4" action:nil keyEquivalent:@""];
     [menu addItem:versionItem_];
-
+    NSLog(@"Version item added");
+    
     statusMenuItem_ = [[NSMenuItem alloc] initWithTitle:@"Starting..." action:nil keyEquivalent:@""];
     [statusMenuItem_ setEnabled:NO];
     [menu addItem:statusMenuItem_];
-
+    NSLog(@"Status menu item added");
+    
     [menu addItem:[NSMenuItem separatorItem]];
-
+    NSLog(@"Separator added");
+    
     NSMenuItem* refreshItem = [[NSMenuItem alloc] initWithTitle:@"Refresh"
-                                                         action:@selector(manualRefresh:)
-                                                  keyEquivalent:@"r"];
+                                                          action:@selector(manualRefresh:)
+                                                   keyEquivalent:@"r"];
     [refreshItem setTarget:self];
     [menu addItem:refreshItem];
-
+    NSLog(@"Refresh item added");
+    
     // Display Style submenu
     NSMenuItem* displayStyleItem = [[NSMenuItem alloc] initWithTitle:@"Display Style" action:nil keyEquivalent:@""];
     displayStyleMenu_ = [self buildDisplayStyleMenu];
     [displayStyleItem setSubmenu:displayStyleMenu_];
     [menu addItem:displayStyleItem];
-
+    NSLog(@"Display style submenu added");
+    
     // Color Mode submenu
     NSMenuItem* colorModeItem = [[NSMenuItem alloc] initWithTitle:@"Color Mode" action:nil keyEquivalent:@""];
     colorModeMenu_ = [self buildColorModeMenu];
     [colorModeItem setSubmenu:colorModeMenu_];
     [menu addItem:colorModeItem];
-
+    NSLog(@"Color mode submenu added");
+    
+    // Scroll Settings submenu
+    NSMenuItem* scrollSettingsItem = [[NSMenuItem alloc] initWithTitle:@"Scroll Settings" action:nil keyEquivalent:@""];
+    @try {
+        scrollSettingsMenu_ = [self buildScrollSettingsMenu];
+        [scrollSettingsItem setSubmenu:scrollSettingsMenu_];
+        NSLog(@"Scroll settings submenu built successfully");
+    } @catch (NSException* e) {
+        NSLog(@"ERROR building scroll menu: %@", e);
+        NSMenuItem* errItem = [[NSMenuItem alloc] initWithTitle:@"⚠️ Error loading menu" action:nil keyEquivalent:@""];
+        [errItem setEnabled:NO];
+        NSMenu* errMenu = [[NSMenu alloc] initWithTitle:@""];
+        [errMenu addItem:errItem];
+        [scrollSettingsItem setSubmenu:errMenu];
+    }
+    [menu addItem:scrollSettingsItem];
+    NSLog(@"Scroll settings item added");
+    
     [menu addItem:[NSMenuItem separatorItem]];
-
+    NSLog(@"Separator added");
+    
     NSMenuItem* loginItem = [[NSMenuItem alloc] initWithTitle:@"Open at Login"
-                                                       action:@selector(openLoginSettings:)
-                                                keyEquivalent:@""];
+                                                        action:@selector(openLoginSettings:)
+                                                 keyEquivalent:@""];
     [loginItem setTarget:self];
     [menu addItem:loginItem];
-
+    NSLog(@"Login item added");
+    
     [menu addItem:[NSMenuItem separatorItem]];
-
+    NSLog(@"Separator added");
+    
     NSMenuItem* quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit"
-                                                       action:@selector(terminate:)
-                                                keyEquivalent:@"q"];
+                                                        action:@selector(terminate:)
+                                                 keyEquivalent:@"q"];
     [quitItem setTarget:NSApp];
     [menu addItem:quitItem];
+    NSLog(@"Quit item added");
     statusItem_.menu = menu;
+    NSLog(@"Menu assigned to statusItem");
+    
+    // Verify menu was set correctly
+    if (statusItem_.menu) {
+        NSLog(@"Menu successfully set: %lu items", (unsigned long)[statusItem_.menu.itemArray count]);
+        for (NSMenuItem* item in statusItem_.menu.itemArray) {
+            NSLog(@"  Item: '%@' (enabled=%d)", item.title, [item isEnabled]);
+        }
+    } else {
+        NSLog(@"ERROR: Menu is nil after assignment!");
+    }
+    
+    // Additional debug: test menu opening
+    NSLog(@"Menu configuration complete - click test ready");
 
     // STEP 2: Force UI to appear immediately
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+    
+    // Additional debug: verify status item properties
+    NSLog(@"Status item length: %f", [statusItem_ length]);
+    NSLog(@"Status item button isHidden: %d", [statusItem_.button isHidden]);
+    NSLog(@"Status item button alphaValue: %f", [statusItem_.button alphaValue]);
 
     // STEP 3: Start IOKit Hotplug Monitoring via RazerDevice
     if (razerDevice_) {
@@ -176,6 +268,27 @@ static void onDeviceChange(void* context) {
 
     // STEP 5: Connect to device
     [self performSelector:@selector(connectToDevice) withObject:nil afterDelay:0.5];
+
+
+    
+    // STEP 6: Set up scroll wheel interception
+    scrollInterceptor_ = [[ScrollInterceptor alloc] init];
+    [self pushScrollPrefsToInterceptor];
+    if ([ScrollInterceptor hasAccessibilityPermission]) {
+        NSError* tapError = nil;
+        if (![scrollInterceptor_ startWithError:&tapError]) {
+            NSLog(@"ScrollInterceptor start failed: %@", tapError);
+        } else {
+            NSLog(@"ScrollInterceptor started successfully - this should fix menu click issues");
+        }
+    } else {
+        [self updateScrollPermissionUI];
+        accessibilityPollTimer_ = [NSTimer scheduledTimerWithTimeInterval:5.0
+                                                                    target:self
+                                                                  selector:@selector(checkAccessibilityPermission:)
+                                                                  userInfo:nil
+                                                                   repeats:YES];
+    }
 }
 
 - (void)setDisconnectedState:(NSString*)statusText {
@@ -201,15 +314,28 @@ static void onDeviceChange(void* context) {
                                              selector:@selector(connectToDevice)
                                                object:nil];
 
-    // Disconnect stale USB handle
-    razerDevice_->disconnect();
+    // Dispatch connection tasks to background to avoid UI freeze while holding usbMutex_
+    __weak BatteryMonitorApp* weakSelf = self;
+    dispatch_async(batteryQueue_, ^{
+        BatteryMonitorApp* strongSelf = weakSelf;
+        if (!strongSelf) return;
+        
+        // Disconnect stale USB handle
+        strongSelf->razerDevice_->disconnect();
 
-    // Try to reconnect once. If it fails, let the 10s poll timer retry.
-    if (razerDevice_->connect()) {
-        [self updateBatteryDisplay];
-    } else {
-        [self setDisconnectedState:@"Disconnected"];
-    }
+        // Try to reconnect once. If it fails, let the 10s poll timer retry.
+        bool success = strongSelf->razerDevice_->connect();
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BatteryMonitorApp* strongSelf2 = weakSelf;
+            if (!strongSelf2) return;
+            if (success) {
+                [strongSelf2 updateBatteryDisplay];
+            } else {
+                [strongSelf2 setDisconnectedState:@"Disconnected"];
+            }
+        });
+    });
 }
 
 - (void)manualRefresh:(id)sender {
@@ -697,12 +823,12 @@ static void onDeviceChange(void* context) {
         content.title = [NSString stringWithFormat:@"%@ - Low Battery", name];
         content.body = [NSString stringWithFormat:@"Battery level is %d%%. Please charge your mouse.", batteryPercent];
         content.sound = [UNNotificationSound defaultSound];
-
+        
         // Create notification request (deliver immediately)
         UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:@"LowBatteryNotification"
-                                                                              content:content
-                                                                              trigger:nil];
-
+                                                                               content:content
+                                                                               trigger:nil];
+        
         // Schedule notification
         [center addNotificationRequest:request withCompletionHandler:^(NSError* error) {
             if (error) {
@@ -736,6 +862,14 @@ static void onDeviceChange(void* context) {
 - (void)applicationWillTerminate:(NSNotification*)notification {
     (void)notification;
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
+    if (scrollInterceptor_) {
+        [scrollInterceptor_ stop];
+        scrollInterceptor_ = nil;
+    }
+    if (accessibilityPollTimer_) {
+        [accessibilityPollTimer_ invalidate];
+        accessibilityPollTimer_ = nil;
+    }
     if (pollTimer_) {
         [pollTimer_ invalidate];
         pollTimer_ = nil;
@@ -745,6 +879,361 @@ static void onDeviceChange(void* context) {
         razerDevice_->disconnect();
         delete razerDevice_;
         razerDevice_ = nullptr;
+    }
+}
+
+#pragma mark - Scroll Settings
+
+- (NSMenu*)buildScrollSettingsMenu {
+    NSMenu* submenu = [[NSMenu alloc] initWithTitle:@"Scroll Settings"];
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    BOOL masterOn = [ud boolForKey:kScrollMasterKey];
+    BOOL hasPermission = [ScrollInterceptor hasAccessibilityPermission];
+    
+    // Update title to show status
+    if (!hasPermission) {
+        submenu.title = @"Scroll Settings ⚠️ Needs Permission";
+    } else if (!masterOn) {
+        submenu.title = @"Scroll Settings 🖱️ Off";
+    } else {
+        submenu.title = @"Scroll Settings ✅ Enabled";
+    }
+
+    // Permission warning
+    NSMenuItem* permItem = [[NSMenuItem alloc] initWithTitle:@"⚠ Enable Scroll Features (1-click setup…)"
+                                                      action:@selector(openAccessibilitySetup:)
+                                               keyEquivalent:@""];
+    permItem.target = self;
+    permItem.tag = 999; // Tag for easy lookup
+    permItem.hidden = [ScrollInterceptor hasAccessibilityPermission];
+    [submenu addItem:permItem];
+    if (!permItem.hidden) [submenu addItem:[NSMenuItem separatorItem]];
+
+    // 0. Master Switch
+    NSMenuItem* masterItem = [[NSMenuItem alloc] initWithTitle:@"Enable Scroll Features"
+                                                        action:@selector(scrollFeatureToggled:)
+                                                 keyEquivalent:@""];
+    masterItem.target = self;
+    masterItem.tag = 10;
+    masterItem.state = masterOn ? NSControlStateValueOn : NSControlStateValueOff;
+    [submenu addItem:masterItem];
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    // 1. Reverse Scroll (no slider needed)
+    NSMenuItem* reverseItem = [[NSMenuItem alloc] initWithTitle:@"Reverse Scroll"
+                                                         action:@selector(scrollFeatureToggled:)
+                                                  keyEquivalent:@""];
+    reverseItem.target = self;
+    reverseItem.tag = 0;
+    reverseItem.state = [ud boolForKey:kScrollReverseKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    reverseItem.enabled = masterOn;
+    [submenu addItem:reverseItem];
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    // 2. Scroll Speed — show slider only if enabled
+    NSMenuItem* speedItem = [[NSMenuItem alloc] initWithTitle:@"Scroll Speed"
+                                                       action:@selector(scrollFeatureToggled:)
+                                                keyEquivalent:@""];
+    speedItem.target = self;
+    speedItem.tag = 1;
+    BOOL speedOn = [ud boolForKey:kScrollSpeedKey];
+    speedItem.state = speedOn ? NSControlStateValueOn : NSControlStateValueOff;
+    speedItem.enabled = masterOn;
+    [submenu addItem:speedItem];
+
+    if (speedOn && masterOn) {
+        NSMenuItem* speedSliderItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+        speedSliderItem.view = [self sliderViewWithLabel:@"Speed"
+                                                  value:[ud doubleForKey:kScrollSpeedFactor]
+                                                    min:1.0 max:10.0
+                                                 action:@selector(scrollSpeedSliderChanged:)
+                                                    tag:1];
+        [submenu addItem:speedSliderItem];
+    }
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    // 3. Scroll Acceleration — show slider only if enabled
+    NSMenuItem* accelItem = [[NSMenuItem alloc] initWithTitle:@"Scroll Acceleration"
+                                                       action:@selector(scrollFeatureToggled:)
+                                                keyEquivalent:@""];
+    accelItem.target = self;
+    accelItem.tag = 2;
+    BOOL accelOn = [ud boolForKey:kScrollAccelKey];
+    accelItem.state = accelOn ? NSControlStateValueOn : NSControlStateValueOff;
+    accelItem.enabled = masterOn;
+    [submenu addItem:accelItem];
+
+    if (accelOn && masterOn) {
+        NSMenuItem* accelSliderItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+        accelSliderItem.view = [self sliderViewWithLabel:@"Curve"
+                                                  value:[ud doubleForKey:kScrollAccelCurve]
+                                                    min:1.0 max:3.0
+                                                 action:@selector(scrollAccelSliderChanged:)
+                                                    tag:2];
+        [submenu addItem:accelSliderItem];
+    }
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    // 4. Smooth Scrolling — show slider only if enabled
+    NSMenuItem* smoothItem = [[NSMenuItem alloc] initWithTitle:@"Smooth Scrolling"
+                                                        action:@selector(scrollFeatureToggled:)
+                                                 keyEquivalent:@""];
+    smoothItem.target = self;
+    smoothItem.tag = 3;
+    BOOL smoothOn = [ud boolForKey:kScrollSmoothKey];
+    smoothItem.state = smoothOn ? NSControlStateValueOn : NSControlStateValueOff;
+    smoothItem.enabled = masterOn;
+    [submenu addItem:smoothItem];
+
+    if (smoothOn && masterOn) {
+        NSMenuItem* decaySliderItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+        decaySliderItem.view = [self sliderViewWithLabel:@"Inertia"
+                                                  value:[ud doubleForKey:kScrollDecayFactor]
+                                                    min:0.70 max:0.98
+                                                 action:@selector(scrollDecaySliderChanged:)
+                                                    tag:3];
+        [submenu addItem:decaySliderItem];
+    }
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    // 5. Back Button Navigation (no slider needed)
+    NSMenuItem* backItem = [[NSMenuItem alloc] initWithTitle:@"Back Button Navigation"
+                                                      action:@selector(scrollFeatureToggled:)
+                                               keyEquivalent:@""];
+    backItem.target = self;
+    backItem.tag = 4;
+    backItem.state = [ud boolForKey:kScrollBackKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    backItem.enabled = masterOn;
+    [submenu addItem:backItem];
+
+    return submenu;
+}
+
+- (NSView*)sliderViewWithLabel:(NSString*)label
+                         value:(double)value min:(double)min max:(double)max
+                        action:(SEL)action tag:(NSInteger)tag {
+    CGFloat width = 230.0;
+    CGFloat height = 26.0;
+    NSView* container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+
+    NSTextField* lbl = [NSTextField labelWithString:label];
+    lbl.frame = NSMakeRect(18, 5, 55, 16);
+    lbl.font = [NSFont systemFontOfSize:11.0];
+    [container addSubview:lbl];
+
+    NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(75, 4, 110, 18)];
+    slider.minValue = min;
+    slider.maxValue = max;
+    slider.doubleValue = value;
+    slider.continuous = YES;
+    slider.target = self;
+    slider.action = action;
+    slider.tag = tag;
+    [container addSubview:slider];
+
+    NSString* fmt = ((max - min) < 1.0) ? @"%.2f" : @"%.1f";
+    NSTextField* valLbl = [NSTextField labelWithString:[NSString stringWithFormat:fmt, value]];
+    valLbl.frame = NSMakeRect(190, 5, 35, 16);
+    valLbl.font = [NSFont systemFontOfSize:11.0];
+    valLbl.tag = tag + 100;
+    [container addSubview:valLbl];
+
+    return container;
+}
+
+- (void)pushScrollPrefsToInterceptor {
+    if (!scrollInterceptor_) return;
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    
+    BOOL masterOn = [ud boolForKey:kScrollMasterKey];
+    scrollInterceptor_.masterEnabled       = masterOn;
+    
+    scrollInterceptor_.reverseEnabled      = [ud boolForKey:kScrollReverseKey];
+    scrollInterceptor_.speedEnabled        = [ud boolForKey:kScrollSpeedKey];
+    scrollInterceptor_.speedFactor         = [ud doubleForKey:kScrollSpeedFactor];
+    scrollInterceptor_.accelerationEnabled = [ud boolForKey:kScrollAccelKey];
+    scrollInterceptor_.accelerationCurve   = [ud doubleForKey:kScrollAccelCurve];
+    scrollInterceptor_.smoothEnabled       = [ud boolForKey:kScrollSmoothKey];
+    scrollInterceptor_.smoothDecayFactor   = [ud doubleForKey:kScrollDecayFactor];
+    scrollInterceptor_.backButtonEnabled   = [ud boolForKey:kScrollBackKey];
+}
+
+- (void)updateScrollPermissionUI {
+    for (NSMenuItem* item in statusItem_.menu.itemArray) {
+        if ([item.title isEqualToString:@"Scroll Settings"]) {
+            NSMenuItem* permItem = [item.submenu itemWithTag:999];
+            if (permItem) {
+                permItem.hidden = [ScrollInterceptor hasAccessibilityPermission];
+            }
+            break;
+        }
+    }
+}
+
+- (void)openAccessibilitySetup:(id)sender {
+    (void)sender;
+    
+    // Show clear instructions to user
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Enable Scroll Features in 1 Click";
+    alert.informativeText = @"To enable scroll customization, Razer Battery Monitor needs Accessibility access.\n\nClick OK below to open System Settings, then:\n1. Scroll down to 'Privacy & Security'\n2. Click 'Accessibility'\n3. Toggle 'Razer Battery Monitor' ON\n4. Close System Settings\n\nScroll features will work immediately!";
+    alert.alertStyle = NSAlertStyleInformational;
+    
+    [alert addButtonWithTitle:@"OK, Open Settings"];
+    [alert addButtonWithTitle:@"Cancel"];
+    
+    NSModalResponse response = [alert runModal];
+    if (response == NSAlertFirstButtonReturn) {
+        [ScrollInterceptor requestAccessibilityPermission];
+    }
+}
+
+- (void)checkAccessibilityPermission:(NSTimer*)timer {
+    (void)timer;
+    if (![ScrollInterceptor hasAccessibilityPermission]) return;
+    [accessibilityPollTimer_ invalidate];
+    accessibilityPollTimer_ = nil;
+    NSError* tapError = nil;
+    if (![scrollInterceptor_ startWithError:&tapError]) {
+        NSLog(@"ScrollInterceptor start failed after permission grant: %@", tapError);
+    }
+[self updateScrollPermissionUI];
+}
+
+- (void)scrollSpeedSliderChanged:(id)sender {
+    NSSlider* slider = (NSSlider*)sender;
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    [ud setDouble:slider.doubleValue forKey:kScrollSpeedFactor];
+    [ud synchronize];
+    [self pushScrollPrefsToInterceptor];
+    
+    // Update value label
+    NSView* superview = slider.superview;
+    for (NSView* subview in superview.subviews) {
+        if ([subview isKindOfClass:[NSTextField class]] && subview.tag == 101) {
+            NSTextField* label = (NSTextField*)subview;
+            NSString* fmt = ((slider.maxValue - slider.minValue) < 1.0) ? @"%.2f" : @"%.1f";
+            label.stringValue = [NSString stringWithFormat:fmt, slider.doubleValue];
+            break;
+        }
+    }
+}
+
+- (void)scrollAccelSliderChanged:(id)sender {
+    NSSlider* slider = (NSSlider*)sender;
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    [ud setDouble:slider.doubleValue forKey:kScrollAccelCurve];
+    [ud synchronize];
+    [self pushScrollPrefsToInterceptor];
+    
+    // Update value label
+    NSView* superview = slider.superview;
+    for (NSView* subview in superview.subviews) {
+        if ([subview isKindOfClass:[NSTextField class]] && subview.tag == 102) {
+            NSTextField* label = (NSTextField*)subview;
+            NSString* fmt = ((slider.maxValue - slider.minValue) < 1.0) ? @"%.2f" : @"%.1f";
+            label.stringValue = [NSString stringWithFormat:fmt, slider.doubleValue];
+            break;
+        }
+    }
+}
+
+- (void)scrollDecaySliderChanged:(id)sender {
+    NSSlider* slider = (NSSlider*)sender;
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    [ud setDouble:slider.doubleValue forKey:kScrollDecayFactor];
+    [ud synchronize];
+    [self pushScrollPrefsToInterceptor];
+    
+    // Update value label
+    NSView* superview = slider.superview;
+    for (NSView* subview in superview.subviews) {
+        if ([subview isKindOfClass:[NSTextField class]] && subview.tag == 103) {
+            NSTextField* label = (NSTextField*)subview;
+            NSString* fmt = ((slider.maxValue - slider.minValue) < 1.0) ? @"%.2f" : @"%.1f";
+            label.stringValue = [NSString stringWithFormat:fmt, slider.doubleValue];
+            break;
+        }
+    }
+}
+
+- (void)scrollFeatureToggled:(id)sender {
+    NSMenuItem* menuItem = (NSMenuItem*)sender;
+    NSInteger tag = menuItem.tag;
+    
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    
+    // Toggle the state first
+    if (menuItem.state == NSControlStateValueOn) {
+        menuItem.state = NSControlStateValueOff;
+    } else {
+        menuItem.state = NSControlStateValueOn;
+    }
+    
+    switch (tag) {
+        case 10: // Master switch
+            [ud setBool:menuItem.state == NSControlStateValueOn forKey:kScrollMasterKey];
+            break;
+        case 0: // Reverse scroll
+            [ud setBool:menuItem.state == NSControlStateValueOn forKey:kScrollReverseKey];
+            break;
+        case 1: // Scroll speed
+            [ud setBool:menuItem.state == NSControlStateValueOn forKey:kScrollSpeedKey];
+            break;
+        case 2: // Scroll acceleration
+            [ud setBool:menuItem.state == NSControlStateValueOn forKey:kScrollAccelKey];
+            break;
+        case 3: // Smooth scrolling
+            [ud setBool:menuItem.state == NSControlStateValueOn forKey:kScrollSmoothKey];
+            break;
+        case 4: // Back button
+            [ud setBool:menuItem.state == NSControlStateValueOn forKey:kScrollBackKey];
+            break;
+        default:
+            break;
+    }
+    
+    // Save preferences and update interceptor
+    [ud synchronize];
+    [self pushScrollPrefsToInterceptor];
+    
+    NSLog(@"Scroll feature %ld toggled: %d", (long)tag, menuItem.state == NSControlStateValueOn);
+}
+
+- (void)menuWillOpen:(NSMenu*)menu {
+    (void)menu;
+    // Called when menu is about to open - can be used for dynamic updates
+}
+
+- (void)openAccessibilitySettings:(id)sender {
+    (void)sender;
+    // Legacy method - redirect to new setup method
+    [self openAccessibilitySetup:sender];
+}
+
+- (void)statusItemClicked:(id)sender {
+    (void)sender;
+    NSLog(@"Status item clicked");
+    // Menu should show automatically when status item is clicked
+    // If it doesn't, we can force it by sending a mouse down event
+    [statusItem_.button performClick:sender];
+}
+
+- (void)updateStatusBarTooltip {
+    NSString* baseTooltip = @"Razer Battery Monitor";
+    
+    if (![ScrollInterceptor hasAccessibilityPermission]) {
+        // Add scroll status to tooltip when permissions are missing
+        NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+        BOOL masterOn = [ud boolForKey:kScrollMasterKey];
+        
+        if (masterOn) {
+            statusItem_.button.toolTip = [NSString stringWithFormat:@"%@ ⚠️ Scroll Features Disabled (Enable Accessibility)", baseTooltip];
+        } else {
+            statusItem_.button.toolTip = [NSString stringWithFormat:@"%@ 🖱️ Scroll Features Off", baseTooltip];
+        }
+    } else {
+        statusItem_.button.toolTip = baseTooltip;
     }
 }
 

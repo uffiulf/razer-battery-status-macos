@@ -548,6 +548,11 @@ bool RazerDevice::setDeviceMode(uint8_t mode, uint8_t param) {
     usbTimer_.waitForResponse();
     if (isShuttingDown_) return false;
 
+    // Verify interface survived the sleep
+    if (usbInterface_ == nullptr || isShuttingDown_) {
+        return false;
+    }
+
     uint8_t response[REPORT_SIZE];
     std::memset(response, 0, REPORT_SIZE);
 
@@ -558,6 +563,11 @@ bool RazerDevice::setDeviceMode(uint8_t mode, uint8_t param) {
 
     // Wait for mode switch to complete
     usleep(300000);  // 300ms
+    if (isShuttingDown_) return false;
+
+    if (usbInterface_ == nullptr || isShuttingDown_) {
+        return false;
+    }
 
     // Accept Status 0x00 (Success) or 0x02 (Busy/Acknowledged)
     if (response[0] == 0x00 || response[0] == 0x02) {
@@ -679,7 +689,6 @@ bool RazerDevice::queryBattery(uint8_t& batteryPercent) {
             continue;
         }
 
-        if (isShuttingDown_) return false;
         usbTimer_.waitForResponse();
         if (isShuttingDown_) return false;
 
@@ -754,7 +763,6 @@ bool RazerDevice::queryChargingStatus(bool& isCharging) {
             continue;
         }
 
-        if (isShuttingDown_) { isCharging = false; return false; }
         usbTimer_.waitForResponse();
         if (isShuttingDown_) { isCharging = false; return false; }
 

@@ -9,9 +9,9 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleVersion</key>
-    <string>1.3.2</string>
+    <string>1.3.4</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.3.2</string>
+    <string>1.3.4</string>
     <key>LSUIElement</key>
     <true/>
     <key>CFBundleIconFile</key>
@@ -22,5 +22,7 @@
     <string>Copyright © 2024</string>
     <key>IOKitUsageDescription</key>
     <string>This application needs access to USB HID devices to monitor your Razer mouse battery level.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Razer Battery Monitor needs Accessibility access to intercept and customize scroll wheel behavior.</string>
 </dict>
 </plist>
