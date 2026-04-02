@@ -215,7 +215,7 @@ wLength:       90 bytes
               └────────┬───────┘
                        ▼
               ┌────────────────┐
-              │  Razer Viper   │
+              │  Razer mouse   │
               │   V2 Pro       │
               │  (Interface 2) │
               └────────────────┘
