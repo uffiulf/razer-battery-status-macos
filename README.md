@@ -492,3 +492,10 @@ If you successfully port to another mouse:
 ## Contributing
 
 Pull requests welcome! If you port this to another Razer mouse, please share your findings to help others.
+
+
+## Disclaimer
+
+This project is an independent open-source utility and is not affiliated with, authorized, maintained, sponsored, or endorsed by Razer Inc. 
+
+All product and company names (including "Razer") are trademarks™ or registered® trademarks of their respective holders. Use of them does not imply any affiliation with or endorsement by them. This software is provided "as is", without warranty of any kind.
