@@ -3,7 +3,7 @@
 A native macOS menu bar application that displays battery status for supported Razer wireless mice.
 
 ![Status: Working](https://img.shields.io/badge/Status-Working-brightgreen)
-![Version: 1.3.3](https://img.shields.io/badge/Version-1.3.3-blue)
+![Version: 1.3.4](https://img.shields.io/badge/Version-1.3.4-blue)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS-blue)
 
 
@@ -11,7 +11,7 @@ A native macOS menu bar application that displays battery status for supported R
 
 -------------------------------------------------------------------------------------------------------------------
 
-**📥 [Download Latest Release](https://github.com/uffiulf/razer-viper-v2pro-macos-battery-status/releases/latest)**
+**📥 [Download Latest Release](https://github.com/uffiulf/razer-battery-status-macos/releases/latest)**
 
 -------------------------------------------------------------------------------------------------------------------
 
@@ -32,6 +32,30 @@ A native macOS menu bar application that displays battery status for supported R
 - 🖱️ Hover tooltip shows device name
 - 🍎 Native macOS app using Cocoa + IOKit
 - 📦 DMG installer with drag-and-drop installation
+
+## 🎛️ New! Custom Scroll Settings (v1.3.4)
+
+Enhance your mouse scrolling experience with customizable scroll features:
+
+| Feature | Description |
+|---------|-------------|
+| **Reverse Scroll** | Flip scroll direction (natural/touchpad style) |
+| **Scroll Speed** | Adjust scroll speed multiplier (1x-10x) |
+| **Scroll Acceleration** | Customize acceleration curve for different feel |
+| **Smooth Scrolling** | Momentum-based smooth scrolling with inertia |
+| **Back Button** | Mouse button 4 triggers Finder back navigation |
+
+### Requirements
+- Accessibility permission required (app will guide you through 1-click setup)
+- Works with any mouse scroll wheel
+- Battery monitoring works without any special permissions
+
+### How to Enable
+1. Click the mouse icon in menu bar
+2. Go to "Scroll Settings"
+3. Click "Enable Scroll Features (1-click setup...)"
+4. Follow the simple instructions in System Settings
+5. Enable scroll features and customize to your preference!
 
 ## Supported Devices
 
@@ -66,15 +90,15 @@ The following Razer wireless mice are supported (wireless and wired/charging mod
 ## Installation
 
 ### From DMG (Recommended)
-1. **[Download latest release](https://github.com/uffiulf/razer-viper-v2pro-macos-battery-status/releases/latest)** - Download `RazerBatteryMonitor.dmg`
+1. **[Download latest release](https://github.com/uffiulf/razer-battery-status-macos/releases/latest)** - Download `RazerBatteryMonitor-Installer.dmg`
 2. Open the DMG and drag the app to Applications
 3. Right-click the app → "Open" (first time only, to bypass Gatekeeper)
 4. Grant Input Monitoring permission if prompted
 
 ### From Source
 ```bash
-git clone https://github.com/uffiulf/razer-viper-v2pro-macos-battery-status.git
-cd razer-viper-v2pro-macos-battery-status
+git clone https://github.com/uffiulf/razer-battery-status-macos.git
+cd razer-battery-status-macos
 make
 sudo ./RazerBatteryMonitor
 ```
@@ -271,7 +295,32 @@ wLength:       90 bytes
 
 ## Recent Updates (2026)
 
-### ✨ Display Preferences & Color Customization (v1.3.3)
+### 🎛️ Custom Scroll Settings (v1.3.4)
+
+Major feature release with customizable scroll wheel behavior:
+
+**New Features:**
+- ✅ **Scroll Interceptor**: Full control over mouse scroll wheel events
+- ✅ **Smooth Scrolling**: Momentum-based scrolling with configurable inertia (decay factor 0.70-0.98)
+- ✅ **Reverse Scroll**: Flip scroll direction for natural/touchpad style
+- ✅ **Scroll Speed**: Adjustable speed multiplier (1x-10x)
+- ✅ **Scroll Acceleration**: Customizable acceleration curve
+- ✅ **Back Button Navigation**: Mouse button 4 triggers Finder back (Cmd+[)
+- ✅ **1-Click Setup**: User-friendly dialog guides through Accessibility permission
+- ✅ **Professional DMG Installer**: Traditional Mac drag-and-drop installation
+- ✅ **Visual Feedback**: Status indicators (⚠️/🖱️/✅) in menu
+
+**Technical Implementation:**
+- CGEventTap for scroll wheel interception
+- CVDisplayLink/CADisplayLink for smooth 60fps animation
+- SmoothScrollEngine with velocity tracking and decay
+- Automatic permission detection and UI updates
+
+**Fixes:**
+- Fixed menu not showing when clicking status bar icon
+- Fixed back button (mouse 4) not working in Finder
+- Fixed scroll settings being disabled without Accessibility permission
+- Added missing action methods for scroll toggles and sliders
 
 User-configurable display styles and color modes for personalized menu bar appearance:
 
@@ -325,6 +374,18 @@ See [REFACTORING_NOTES.md](REFACTORING_NOTES.md) for detailed technical informat
 ---
 
 ## Changelog
+
+### v1.3.4
+- **Custom Scroll Settings**: New feature with 5 scroll customization options
+- **Smooth Scrolling**: Momentum-based scrolling with configurable inertia
+- **Reverse Scroll**: Flip scroll direction
+- **Scroll Speed**: Adjustable speed multiplier (1x-10x)
+- **Scroll Acceleration**: Customizable acceleration curve
+- **Back Button**: Mouse button 4 triggers Finder back navigation
+- **1-Click Setup**: User-friendly Accessibility permission setup
+- **Professional DMG Installer**: Traditional Mac drag-and-drop
+- **Bug fixes**: Menu click, back button in Finder, permission handling
+- **Version bump**: 1.3.4
 
 ### v1.3.3
 - **Display Style preferences**: 4 user-selectable menu bar styles (Icon+Percent stacked/horizontal, Percent only, Icon only)
