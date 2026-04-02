@@ -216,7 +216,7 @@ wLength:       90 bytes
                        ▼
               ┌────────────────┐
               │  Razer mouse   │
-              │   V2 Pro       │
+              │                │
               │  (Interface 2) │
               └────────────────┘
 ```
