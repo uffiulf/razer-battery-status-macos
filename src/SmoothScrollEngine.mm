@@ -53,7 +53,29 @@ static const double kStopThreshold   = 0.1;
 }
 
 - (void)dealloc {
-    [self cancelMomentum];
+    // Stop display link directly (can't use weak-self pattern during dealloc
+    // because ARC zeroes weak references before dealloc runs)
+    os_unfair_lock_lock(&lock_);
+    velocityX_ = 0.0;
+    velocityY_ = 0.0;
+    isRunning_ = NO;
+    os_unfair_lock_unlock(&lock_);
+
+    if (@available(macOS 14.0, *)) {
+        if (_displayLink) {
+            [((CADisplayLink*)_displayLink) invalidate];
+            _displayLink = nil;
+        }
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        if (cvDisplayLink_ != NULL) {
+            CVDisplayLinkStop(cvDisplayLink_);
+            CVDisplayLinkRelease(cvDisplayLink_);
+            cvDisplayLink_ = NULL;
+        }
+#pragma clang diagnostic pop
+    }
 }
 
 // Called from CGEventTap thread — must be lock-safe

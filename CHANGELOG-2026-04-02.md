@@ -41,7 +41,11 @@
    - Tradisjonell Mac-installasjon med "drag & drop"
    - Professional design med pil og Applications-lenke
 
-### Tekniske detalier
+### Kjente problemer
+
+- **Tooltip viser feil status når appen kjører med sudo**: macOS accessibility-tilganger er perbruker. Når appen kjøres som root (sudo), rapporterer AXIsProcessTrusted() at root ikke har tilgang, selv om brukeren har gitt tillatelse. Dette er en macOS-begrensning - appen fungerer fortsatt korrekt.
+
+### Tekniske detaljer
 
 - **Smooth scrolling**: Gjør mus hjul til jevn glidefølelse med momentum
 - **Decay factor (0.70-0.98)**: Kontrollerer hvor fort farten avtar

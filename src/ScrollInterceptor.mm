@@ -1,5 +1,6 @@
 #import "ScrollInterceptor.hpp"
 #import "SmoothScrollEngine.hpp"
+#include <atomic>
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 
@@ -8,9 +9,6 @@ static const double kAccelFactorMin  = 0.5;
 static const double kAccelFactorMax  = 8.0;
 
 static const NSTimeInterval kHealthCheckInterval = 30.0;
-static const NSTimeInterval kTapDeadThreshold    = 60.0;
-static const int            kMaxRestartAttempts  = 5;
-static const NSTimeInterval kRestartBackoffBase  = 5.0;
 
 @implementation ScrollInterceptor {
     CFMachPortRef      eventTap_;
@@ -18,13 +16,10 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
     SmoothScrollEngine* smoothEngine_;
     NSTimeInterval     lastEventTime_;
     double             lastVelocity_;
-    BOOL               isRunning_;
+    std::atomic<bool>  isRunning_;
     NSTimer*           healthTimer_;
-    NSTimeInterval     lastEventSeen_;
-    int                restartAttemptCount_;
-    BOOL               isRestarting_;
-    dispatch_block_t   pendingRestart_;
-    dispatch_queue_t   restartQueue_;
+    std::atomic<double> lastEventSeen_;
+    std::atomic<double> lastTapReenableTime_;
 }
 
 - (instancetype)init {
@@ -36,18 +31,16 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
         _backButtonEnabled = NO;
         lastEventTime_     = 0.0;
         lastVelocity_      = 0.0;
-        isRunning_         = NO;
+        isRunning_.store(false);
         healthTimer_       = nil;
-        lastEventSeen_     = 0.0;
-        restartAttemptCount_ = 0;
-        isRestarting_      = NO;
-        restartQueue_      = dispatch_queue_create("no.ulfsec.scrollrestart", DISPATCH_QUEUE_SERIAL);
+        lastEventSeen_.store(0.0);
+        lastTapReenableTime_.store(0.0);
 
         smoothEngine_ = [[SmoothScrollEngine alloc] init];
         __weak ScrollInterceptor* weakSelf = self;
         smoothEngine_.onTick = ^(double dx, double dy) {
             ScrollInterceptor* s = weakSelf;
-            if (!s || !s->isRunning_) return;
+            if (!s || !s->isRunning_.load()) return;
             CGEventRef e = CGEventCreateScrollWheelEvent2(
                 NULL, kCGScrollEventUnitPixel, 2,
                 (int32_t)round(dy), (int32_t)round(dx), 0);
@@ -61,11 +54,10 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
 }
 
 - (void)dealloc {
-    pendingRestart_ = nil;
     [self stop];
 }
 
-- (BOOL)isRunning { return isRunning_; }
+- (BOOL)isRunning { return isRunning_.load(); }
 
 #pragma mark - Accessibility
 
@@ -86,7 +78,7 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
     __block NSError* internalError = nil;
 
     void (^startBlock)(void) = ^{
-        if (self->isRunning_) {
+        if (self->isRunning_.load()) {
             success = YES;
             return;
         }
@@ -118,11 +110,9 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
         self->runLoopSource_ = CFMachPortCreateRunLoopSource(NULL, self->eventTap_, 0);
         CFRunLoopAddSource(CFRunLoopGetMain(), self->runLoopSource_, kCFRunLoopCommonModes);
         CGEventTapEnable(self->eventTap_, self->_masterEnabled ? true : false);
-        
-        self->isRunning_ = YES;
-        self->lastEventSeen_ = [NSDate timeIntervalSinceReferenceDate];
-        self->restartAttemptCount_ = 0;
-        self->isRestarting_ = NO;
+
+        self->isRunning_.store(true);
+        self->lastEventSeen_.store([NSDate timeIntervalSinceReferenceDate]);
 
         self->healthTimer_ = [NSTimer scheduledTimerWithTimeInterval:kHealthCheckInterval
                                                         target:self
@@ -146,7 +136,7 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
 
 - (void)stop {
     void (^stopBlock)(void) = ^{
-        if (!self->isRunning_) return;
+        if (!self->isRunning_.load()) return;
         [self->smoothEngine_ cancelMomentum];
         if (self->healthTimer_) {
             [self->healthTimer_ invalidate];
@@ -156,7 +146,7 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
         CFRunLoopRemoveSource(CFRunLoopGetMain(), self->runLoopSource_, kCFRunLoopCommonModes);
         CFRelease(self->runLoopSource_); self->runLoopSource_ = NULL;
         CFRelease(self->eventTap_);      self->eventTap_      = NULL;
-        self->isRunning_ = NO;
+        self->isRunning_.store(false);
     };
 
     if ([NSThread isMainThread]) {
@@ -170,8 +160,7 @@ static const NSTimeInterval kRestartBackoffBase  = 5.0;
 
 - (void)setMasterEnabled:(BOOL)v {
     _masterEnabled = v;
-    if (isRunning_ && eventTap_) {
-        // Toggle the actual OS-level tap to ensure 0 overhead when disabled
+    if (isRunning_.load() && eventTap_) {
         CGEventTapEnable(eventTap_, v ? true : false);
     }
 }
@@ -186,18 +175,28 @@ static CGEventRef scrollEventCallback(CGEventTapProxy proxy,
                                       CGEventRef event,
                                       void* userInfo)
 {
+    (void)proxy;
     ScrollInterceptor* self = (__bridge ScrollInterceptor*)userInfo;
 
-    self->lastEventSeen_ = [NSDate timeIntervalSinceReferenceDate];
+    self->lastEventSeen_.store([NSDate timeIntervalSinceReferenceDate]);
 
-    // Always re-enable tap on timeout — this fixes the freeze seen in LinearMouse/Mos
+    // Re-enable tap on timeout, but throttle to max once per second to prevent
+    // feedback loop with WindowServer (high polling rate mice can overwhelm it)
     if (type == kCGEventTapDisabledByTimeout ||
         type == kCGEventTapDisabledByUserInput) {
-        CGEventTapEnable(self->eventTap_, true);
+        if (self->_masterEnabled) {
+            double now = [NSDate timeIntervalSinceReferenceDate];
+            double last = self->lastTapReenableTime_.load(std::memory_order_relaxed);
+            if (now - last > 1.0) {
+                self->lastTapReenableTime_.store(now, std::memory_order_relaxed);
+                CGEventTapEnable(self->eventTap_, true);
+                NSLog(@"[ScrollInterceptor] Tap re-enabled after system timeout");
+            }
+        }
         return event;
     }
 
-    // Don't intercept events when master is disabled - this fixes menu click issue
+    // Don't intercept events when master is disabled
     if (!self->_masterEnabled) {
         return event;
     }
@@ -207,17 +206,10 @@ static CGEventRef scrollEventCallback(CGEventTapProxy proxy,
 
 - (CGEventRef)handleEvent:(CGEventRef)event {
     if (!_masterEnabled) {
-        NSLog(@"[ScrollInterceptor] Master disabled, passing event through");
         return event;
     }
 
     CGEventType type = CGEventGetType(event);
-    
-    // Debug: log mouse events that could interfere with menu clicks
-    if (type == kCGEventOtherMouseDown || type == kCGEventOtherMouseUp) {
-        int32_t button = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
-        NSLog(@"[ScrollInterceptor] Mouse event: button=%d type=%d", button, type);
-    }
 
     // --- BACK BUTTON (Mouse Button 4) ---
     if ((type == kCGEventOtherMouseDown || type == kCGEventOtherMouseUp) && _backButtonEnabled) {
@@ -226,45 +218,33 @@ static CGEventRef scrollEventCallback(CGEventTapProxy proxy,
             NSRunningApplication* front = NSWorkspace.sharedWorkspace.frontmostApplication;
             NSString* bid = front.bundleIdentifier;
 
+            // Apps that need Cmd+[ injection for back navigation
+            // (browsers handle mouse button 4 natively)
             static NSSet* needsInjection = nil;
             static dispatch_once_t onceToken;
             dispatch_once(&onceToken, ^{
                 needsInjection = [NSSet setWithObjects:
                     @"com.apple.finder",
-                    @"com.apple.systempreferences",
-                    @"com.apple.systemsettings",
                     nil];
             });
 
             if ([needsInjection containsObject:bid]) {
-                // For MouseDown: inject Cmd+[ and suppress original event
                 if (type == kCGEventOtherMouseDown) {
-                    CGEventFlags cmdFlag = kCGEventFlagMaskCommand;
+                    // Inject Cmd+[ as a single keystroke — post at session level
+                    // to bypass event taps and reach the target app directly
+                    CGEventRef keyDown = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_ANSI_LeftBracket, true);
+                    CGEventRef keyUp   = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_ANSI_LeftBracket, false);
+                    CGEventSetFlags(keyDown, kCGEventFlagMaskCommand);
+                    CGEventSetFlags(keyUp, kCGEventFlagMaskCommand);
 
-                    CGEventRef cmdDown = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_Command, true);
-                    CGEventRef cmdUp   = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_Command, false);
-                    // kVK_ANSI_LeftBracket = 33 (0x21)
-                    CGEventRef bracketDown = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_ANSI_LeftBracket, true);
-                    CGEventRef bracketUp   = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_ANSI_LeftBracket, false);
+                    CGEventPost(kCGSessionEventTap, keyDown);
+                    CGEventPost(kCGSessionEventTap, keyUp);
 
-                    CGEventSetFlags(cmdDown, cmdFlag);
-                    CGEventSetFlags(bracketDown, cmdFlag);
+                    CFRelease(keyDown);
+                    CFRelease(keyUp);
 
-                    CGEventPost(kCGHIDEventTap, cmdDown);
-                    CGEventPost(kCGHIDEventTap, bracketDown);
-                    CGEventPost(kCGHIDEventTap, bracketUp);
-                    CGEventPost(kCGHIDEventTap, cmdUp);
-
-                    CFRelease(cmdDown);
-                    CFRelease(cmdUp);
-                    CFRelease(bracketDown);
-                    CFRelease(bracketUp);
-
-                    return NULL; // Suppress original mouse down event
+                    return (CGEventRef)NULL;
                 }
-                
-                // For MouseUp: allow it to pass through so OS sees complete click
-                // This fixes the "click sound but no action" issue
                 return event;
             }
         }
@@ -312,7 +292,6 @@ static CGEventRef scrollEventCallback(CGEventTapProxy proxy,
 
         double magnitude = hypot(dx, dy);
         double velocity  = magnitude / dt;
-        // Low-pass filter to smooth out velocity spikes
         double smoothV   = lastVelocity_ * 0.6 + velocity * 0.4;
         lastVelocity_    = smoothV;
 
@@ -327,7 +306,7 @@ static CGEventRef scrollEventCallback(CGEventTapProxy proxy,
     // 4. Smooth — feed engine, suppress original event
     if (_smoothEnabled) {
         [smoothEngine_ feedDeltaX:dx deltaY:dy];
-        return NULL; // Suppress; engine posts synthetic events
+        return NULL;
     }
 
     // Write back modified deltas
@@ -336,67 +315,17 @@ static CGEventRef scrollEventCallback(CGEventTapProxy proxy,
     return event;
 }
 
-#pragma mark - Health Check & Auto-Restart
+#pragma mark - Health Check
 
 - (void)healthCheck:(NSTimer*)timer {
     (void)timer;
-    if (!isRunning_) return;
-    
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    NSTimeInterval idle = now - lastEventSeen_;
+    if (!isRunning_.load()) return;
 
-    if (idle > kTapDeadThreshold && eventTap_ != NULL && !isRestarting_) {
-        NSLog(@"[ScrollInterceptor] Tap appears dead (%.0fs idle), attempting restart", idle);
-        // Dispatch to restart queue to serialize with any pending restarts
-        dispatch_async(restartQueue_, ^{
-            [self attemptAutoRestart];
-        });
+    // Re-enable tap if it was silently disabled by the system
+    if (eventTap_ != NULL && !CGEventTapIsEnabled(eventTap_) && _masterEnabled) {
+        NSLog(@"[ScrollInterceptor] Tap was disabled by system, re-enabling");
+        CGEventTapEnable(eventTap_, true);
     }
-}
-
-- (void)attemptAutoRestart {
-    if (!isRunning_) return;  // Don't restart if already stopped
-    if (isRestarting_) return;
-    if (restartAttemptCount_ >= kMaxRestartAttempts) {
-        NSLog(@"[ScrollInterceptor] Max restart attempts (%d) reached, giving up", kMaxRestartAttempts);
-        isRunning_ = NO;
-        return;
-    }
-
-    isRestarting_ = YES;
-    restartAttemptCount_++;
-
-    NSTimeInterval delay = kRestartBackoffBase * restartAttemptCount_;
-    NSLog(@"[ScrollInterceptor] Restart attempt %d/%d in %.0fs", restartAttemptCount_, kMaxRestartAttempts, delay);
-
-    __weak ScrollInterceptor* weakSelf = self;
-    pendingRestart_ = ^{
-        ScrollInterceptor* strongSelf = weakSelf;
-        if (!strongSelf || !strongSelf->isRunning_) {
-            // App was stopped while waiting - abort restart
-            if (strongSelf) strongSelf->isRestarting_ = NO;
-            return;
-        }
-        strongSelf->pendingRestart_ = nil;
-        [strongSelf stop];
-
-        NSError* error = nil;
-        if ([strongSelf startWithError:&error]) {
-            NSLog(@"[ScrollInterceptor] Auto-restart succeeded");
-            strongSelf->isRestarting_ = NO;
-        } else {
-            NSLog(@"[ScrollInterceptor] Auto-restart failed: %@", error.localizedDescription);
-            strongSelf->isRestarting_ = NO;
-            // Check isRunning_ again before retrying
-            if (strongSelf->isRunning_ && strongSelf->restartAttemptCount_ < kMaxRestartAttempts) {
-                [strongSelf attemptAutoRestart];
-            } else {
-                strongSelf->isRunning_ = NO;
-            }
-        }
-    };
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), restartQueue_, pendingRestart_);
 }
 
 @end
