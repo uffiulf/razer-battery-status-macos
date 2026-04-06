@@ -7,7 +7,7 @@ set -e  # Exit on error
 APP_NAME="RazerBatteryMonitor"
 APP_BUNDLE="${APP_NAME}.app"
 DMG_NAME="${APP_NAME}.dmg"
-VERSION="1.3.2"
+VERSION="1.3.5"
 
 echo "=========================================="
 echo "  Razer Battery Monitor - Release Build"
