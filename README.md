@@ -3,7 +3,7 @@
 A native macOS menu bar application that displays battery status for supported Razer wireless mice.
 
 ![Status: Working](https://img.shields.io/badge/Status-Working-brightgreen)
-![Version: 1.3.4](https://img.shields.io/badge/Version-1.3.4-blue)
+![Version: 1.3.5](https://img.shields.io/badge/Version-1.3.5-blue)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS-blue)
 
 
@@ -12,6 +12,16 @@ A native macOS menu bar application that displays battery status for supported R
 -------------------------------------------------------------------------------------------------------------------
 
 **📥 [Download Latest Release](https://github.com/uffiulf/razer-battery-status-macos/releases/latest)**
+
+---
+
+### ❤️ Support This Project
+
+If you find this app useful, consider supporting its development:
+
+**[💖 Sponsor on GitHub](https://github.com/sponsors/uffiulf)**
+
+Your sponsorship helps fund continued development, bug fixes, and new features for Razer Battery Monitor.
 
 -------------------------------------------------------------------------------------------------------------------
 
